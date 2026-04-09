@@ -8,17 +8,23 @@ import (
 )
 
 type GroupResponse struct {
-	ID          uuid.UUID     `json:"id"`
-	Name        string        `json:"name"`
-	Description *string       `json:"description,omitempty"`
-	AvatarURL   *string       `json:"avatar_url,omitempty"`
-	OwnerID     uuid.UUID     `json:"owner_id"`
-	MQTTTopic   *string       `json:"mqtt_topic,omitempty"`
-	IsActive    bool          `json:"is_active"`
-	MaxMembers  int           `json:"max_members"`
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
-	Owner       *UserResponse `json:"owner,omitempty"`
+	ID               uuid.UUID     `json:"id"`
+	Name             string        `json:"name"`
+	Description      *string       `json:"description,omitempty"`
+	Avatar           *string       `json:"avatar,omitempty"`
+	AvatarURL        *string       `json:"avatar_url,omitempty"`
+	OwnerID          uuid.UUID     `json:"owner_id"`
+	OwnerIDAlias     uuid.UUID     `json:"ownerId"`
+	MemberCount      int64         `json:"memberCount"`
+	MemberCountAlias int64         `json:"member_count"`
+	MQTTTopic        *string       `json:"mqtt_topic,omitempty"`
+	IsActive         bool          `json:"is_active"`
+	MaxMembers       int           `json:"max_members"`
+	CreatedAt        time.Time     `json:"created_at"`
+	CreatedAtAlias   time.Time     `json:"createdAt"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	UpdatedAtAlias   time.Time     `json:"updatedAt"`
+	Owner            *UserResponse `json:"owner,omitempty"`
 }
 
 type GroupMemberResponse struct {
@@ -51,33 +57,47 @@ type GroupMembersResponse struct {
 }
 
 func NewGroupResponse(group *model.Group) *GroupResponse {
+	return NewGroupResponseWithMemberCount(group, 0)
+}
+
+func NewGroupResponseWithMemberCount(group *model.Group, memberCount int64) *GroupResponse {
 	if group == nil {
 		return nil
 	}
 
 	return &GroupResponse{
-		ID:          group.ID,
-		Name:        group.Name,
-		Description: group.Description,
-		AvatarURL:   group.AvatarURL,
-		OwnerID:     group.OwnerID,
-		MQTTTopic:   group.MQTTTopic,
-		IsActive:    group.IsActive,
-		MaxMembers:  group.MaxMembers,
-		CreatedAt:   group.CreatedAt,
-		UpdatedAt:   group.UpdatedAt,
-		Owner:       NewUserResponse(group.Owner),
+		ID:               group.ID,
+		Name:             group.Name,
+		Description:      group.Description,
+		Avatar:           group.AvatarURL,
+		AvatarURL:        group.AvatarURL,
+		OwnerID:          group.OwnerID,
+		OwnerIDAlias:     group.OwnerID,
+		MemberCount:      memberCount,
+		MemberCountAlias: memberCount,
+		MQTTTopic:        group.MQTTTopic,
+		IsActive:         group.IsActive,
+		MaxMembers:       group.MaxMembers,
+		CreatedAt:        group.CreatedAt,
+		CreatedAtAlias:   group.CreatedAt,
+		UpdatedAt:        group.UpdatedAt,
+		UpdatedAtAlias:   group.UpdatedAt,
+		Owner:            NewUserResponse(group.Owner),
 	}
 }
 
 func NewGroupResponses(groups []model.Group) []GroupResponse {
+	return NewGroupResponsesWithMemberCounts(groups, nil)
+}
+
+func NewGroupResponsesWithMemberCounts(groups []model.Group, memberCounts map[uuid.UUID]int64) []GroupResponse {
 	if len(groups) == 0 {
 		return []GroupResponse{}
 	}
 
 	responses := make([]GroupResponse, 0, len(groups))
 	for i := range groups {
-		responses = append(responses, *NewGroupResponse(&groups[i]))
+		responses = append(responses, *NewGroupResponseWithMemberCount(&groups[i], memberCounts[groups[i].ID]))
 	}
 	return responses
 }

@@ -8,22 +8,30 @@ import (
 )
 
 type UserResponse struct {
-	ID          uuid.UUID        `json:"id"`
-	Username    string           `json:"username"`
-	Email       string           `json:"email"`
-	Nickname    *string          `json:"nickname,omitempty"`
-	AvatarURL   *string          `json:"avatar_url,omitempty"`
-	Status      model.UserStatus `json:"status"`
-	LastLoginAt *time.Time       `json:"last_login_at,omitempty"`
-	LastLoginIP *string          `json:"last_login_ip,omitempty"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	ID             uuid.UUID        `json:"id"`
+	Username       string           `json:"username"`
+	Email          string           `json:"email"`
+	Nickname       string           `json:"nickname"`
+	Avatar         *string          `json:"avatar,omitempty"`
+	AvatarURL      *string          `json:"avatar_url,omitempty"`
+	Status         model.UserStatus `json:"status"`
+	LastLoginAt    *time.Time       `json:"last_login_at,omitempty"`
+	LastLoginIP    *string          `json:"last_login_ip,omitempty"`
+	CreatedAt      time.Time        `json:"created_at"`
+	CreatedAtAlias time.Time        `json:"createdAt"`
+	UpdatedAt      time.Time        `json:"updated_at"`
+	UpdatedAtAlias time.Time        `json:"updatedAt"`
 }
 
 type AuthUserResponse struct {
-	ID       uuid.UUID `json:"id"`
-	Username string    `json:"username"`
-	Email    string    `json:"email"`
+	ID             uuid.UUID `json:"id"`
+	Username       string    `json:"username"`
+	Email          string    `json:"email"`
+	Nickname       string    `json:"nickname"`
+	Avatar         *string   `json:"avatar,omitempty"`
+	AvatarURL      *string   `json:"avatar_url,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	CreatedAtAlias time.Time `json:"createdAt"`
 }
 
 type TokenResponse struct {
@@ -39,8 +47,13 @@ type AuthPayloadResponse struct {
 }
 
 type MeResponse struct {
-	ID       uuid.UUID `json:"id"`
-	Username string    `json:"username"`
+	ID             uuid.UUID `json:"id"`
+	Username       string    `json:"username"`
+	Nickname       string    `json:"nickname"`
+	Avatar         *string   `json:"avatar,omitempty"`
+	AvatarURL      *string   `json:"avatar_url,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	CreatedAtAlias time.Time `json:"createdAt"`
 }
 
 func NewUserResponse(user *model.User) *UserResponse {
@@ -49,16 +62,19 @@ func NewUserResponse(user *model.User) *UserResponse {
 	}
 
 	return &UserResponse{
-		ID:          user.ID,
-		Username:    user.Username,
-		Email:       user.Email,
-		Nickname:    user.Nickname,
-		AvatarURL:   user.AvatarURL,
-		Status:      user.Status,
-		LastLoginAt: user.LastLoginAt,
-		LastLoginIP: user.LastLoginIP,
-		CreatedAt:   user.CreatedAt,
-		UpdatedAt:   user.UpdatedAt,
+		ID:             user.ID,
+		Username:       user.Username,
+		Email:          user.Email,
+		Nickname:       userNickname(user),
+		Avatar:         user.AvatarURL,
+		AvatarURL:      user.AvatarURL,
+		Status:         user.Status,
+		LastLoginAt:    user.LastLoginAt,
+		LastLoginIP:    user.LastLoginIP,
+		CreatedAt:      user.CreatedAt,
+		CreatedAtAlias: user.CreatedAt,
+		UpdatedAt:      user.UpdatedAt,
+		UpdatedAtAlias: user.UpdatedAt,
 	}
 }
 
@@ -80,8 +96,39 @@ func NewAuthUserResponse(user *model.User) *AuthUserResponse {
 	}
 
 	return &AuthUserResponse{
-		ID:       user.ID,
-		Username: user.Username,
-		Email:    user.Email,
+		ID:             user.ID,
+		Username:       user.Username,
+		Email:          user.Email,
+		Nickname:       userNickname(user),
+		Avatar:         user.AvatarURL,
+		AvatarURL:      user.AvatarURL,
+		CreatedAt:      user.CreatedAt,
+		CreatedAtAlias: user.CreatedAt,
 	}
+}
+
+func NewMeResponse(user *model.User) *MeResponse {
+	if user == nil {
+		return nil
+	}
+
+	return &MeResponse{
+		ID:             user.ID,
+		Username:       user.Username,
+		Nickname:       userNickname(user),
+		Avatar:         user.AvatarURL,
+		AvatarURL:      user.AvatarURL,
+		CreatedAt:      user.CreatedAt,
+		CreatedAtAlias: user.CreatedAt,
+	}
+}
+
+func userNickname(user *model.User) string {
+	if user == nil || user.Nickname == nil || *user.Nickname == "" {
+		if user == nil {
+			return ""
+		}
+		return user.Username
+	}
+	return *user.Nickname
 }

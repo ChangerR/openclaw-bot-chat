@@ -67,6 +67,8 @@ go run ./cmd/server
 | POST | /api/v1/auth/refresh | Refresh tokens |
 | POST | /api/v1/auth/logout | Logout |
 | GET | /api/v1/auth/me | Current user info |
+| PUT | /api/v1/auth/me | Update current user profile |
+| POST | /api/v1/auth/change-password | Change current user password |
 
 ### Bots
 | Method | Endpoint | Description |
@@ -84,6 +86,8 @@ go run ./cmd/server
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | /api/v1/messages?conversation_id=xxx&limit=50 | Get messages |
+| GET | /api/v1/messages/:conversation_id | Get messages via REST-style path |
+| POST | /api/v1/messages | Send message via HTTP fallback |
 | GET | /api/v1/conversations | List conversations |
 
 ### Groups
@@ -98,10 +102,11 @@ go run ./cmd/server
 | DELETE | /api/v1/groups/:id/members/:uid | Remove member |
 | GET | /api/v1/groups/:id/members | List members |
 
-### WebSocket
+### Realtime
 | Endpoint | Description |
 |----------|-------------|
-| GET | /api/v1/ws?token=<jwt> | MQTT over WebSocket |
+| ws://localhost:9001 | MQTT over WebSocket broker (primary path for frontend `mqtt.js`) |
+| GET /api/v1/ws?token=<jwt> | Custom WebSocket hub (backup bridge) |
 
 ## MQTT Topics
 

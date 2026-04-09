@@ -200,6 +200,8 @@ const (
 	AuditActionLogin        AuditAction = "login"
 	AuditActionLogout       AuditAction = "logout"
 	AuditActionRegister     AuditAction = "register"
+	AuditActionUpdateProfile  AuditAction = "update_profile"
+	AuditActionChangePassword AuditAction = "change_password"
 	AuditActionCreateBot    AuditAction = "create_bot"
 	AuditActionUpdateBot    AuditAction = "update_bot"
 	AuditActionDeleteBot    AuditAction = "delete_bot"

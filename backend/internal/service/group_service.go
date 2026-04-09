@@ -21,7 +21,7 @@ var (
 
 // GroupService handles group operations
 type GroupService struct {
-	groupRepo  *repository.GroupRepository
+	groupRepo   *repository.GroupRepository
 	auditRepo   *repository.AuditLogRepository
 	topicPrefix string
 }
@@ -29,7 +29,7 @@ type GroupService struct {
 // NewGroupService creates a new group service
 func NewGroupService(groupRepo *repository.GroupRepository, auditRepo *repository.AuditLogRepository, topicPrefix string) *GroupService {
 	return &GroupService{
-		groupRepo:  groupRepo,
+		groupRepo:   groupRepo,
 		auditRepo:   auditRepo,
 		topicPrefix: topicPrefix,
 	}
@@ -55,13 +55,13 @@ type UpdateGroupRequest struct {
 // Create creates a new group
 func (s *GroupService) Create(ctx context.Context, req CreateGroupRequest, ownerID uuid.UUID, ip, userAgent string) (*model.Group, error) {
 	group := &model.Group{
-		Name:       req.Name,
+		Name:        req.Name,
 		Description: req.Description,
-		AvatarURL:  req.AvatarURL,
-		OwnerID:    ownerID,
-		MQTTTopic:  strPtr(fmt.Sprintf("%s/group/%s", s.topicPrefix, uuid.New().String())),
-		IsActive:  true,
-		MaxMembers: req.MaxMembers,
+		AvatarURL:   req.AvatarURL,
+		OwnerID:     ownerID,
+		MQTTTopic:   strPtr(fmt.Sprintf("%s/group/%s", s.topicPrefix, uuid.New().String())),
+		IsActive:    true,
+		MaxMembers:  req.MaxMembers,
 	}
 	if group.MaxMembers == 0 {
 		group.MaxMembers = 500
@@ -71,9 +71,9 @@ func (s *GroupService) Create(ctx context.Context, req CreateGroupRequest, owner
 	}
 	// Add owner as a member
 	ownerMember := &model.GroupMember{
-		GroupID: group.ID,
-		UserID:  ownerID,
-		Role:    model.GroupRoleOwner,
+		GroupID:  group.ID,
+		UserID:   ownerID,
+		Role:     model.GroupRoleOwner,
 		IsActive: true,
 	}
 	if err := s.groupRepo.AddMember(ctx, ownerMember); err != nil {
@@ -169,10 +169,10 @@ func (s *GroupService) Delete(ctx context.Context, groupID, userID uuid.UUID, ip
 
 // AddMemberRequest represents adding a member request
 type AddMemberRequest struct {
-	UserID   *uuid.UUID `json:"user_id"`
-	BotID    *uuid.UUID `json:"bot_id"`
+	UserID   *uuid.UUID            `json:"user_id"`
+	BotID    *uuid.UUID            `json:"bot_id"`
 	Role     model.GroupMemberRole `json:"role"`
-	Nickname *string    `json:"nickname"`
+	Nickname *string               `json:"nickname"`
 }
 
 // AddMember adds a user or bot to a group
@@ -314,4 +314,28 @@ func (s *GroupService) ListMembers(ctx context.Context, groupID uuid.UUID) ([]mo
 		return nil, nil, err
 	}
 	return users, bots, nil
+}
+
+func (s *GroupService) GetMemberCount(ctx context.Context, groupID uuid.UUID) (int64, error) {
+	userCount, err := s.groupRepo.CountMembers(ctx, groupID)
+	if err != nil {
+		return 0, err
+	}
+	botCount, err := s.groupRepo.CountBotMembers(ctx, groupID)
+	if err != nil {
+		return 0, err
+	}
+	return userCount + botCount, nil
+}
+
+func (s *GroupService) GetMemberCounts(ctx context.Context, groupIDs []uuid.UUID) (map[uuid.UUID]int64, error) {
+	counts := make(map[uuid.UUID]int64, len(groupIDs))
+	for _, groupID := range groupIDs {
+		count, err := s.GetMemberCount(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+		counts[groupID] = count
+	}
+	return counts, nil
 }

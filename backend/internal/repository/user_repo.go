@@ -52,6 +52,10 @@ func (r *UserRepository) Update(ctx context.Context, user *model.User) error {
 	return r.db.WithContext(ctx).Save(user).Error
 }
 
+func (r *UserRepository) UpdateFields(ctx context.Context, userID uuid.UUID, updates map[string]interface{}) error {
+	return r.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).Updates(updates).Error
+}
+
 func (r *UserRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID, ip string) error {
 	return r.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
 		"last_login_at": gorm.Expr("NOW()"),

@@ -133,13 +133,78 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
-	username, _ := middleware.GetUsername(c)
-	c.JSON(200, apiresponse.Response{
-		Code:    int(apiresponse.CodeSuccess),
-		Message: "success",
-		Data: responsedto.MeResponse{
-			ID:       userID,
-			Username: username,
-		},
-	})
+
+	user, err := h.authService.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		if errors.Is(err, service.ErrUserNotFound) {
+			apiresponse.NotFound(c, "user not found")
+			return
+		}
+		apiresponse.InternalError(c, "failed to load user profile: "+err.Error())
+		return
+	}
+
+	apiresponse.Success(c, responsedto.NewMeResponse(user))
+}
+
+// UpdateMe updates the current user's profile
+func (h *AuthHandler) UpdateMe(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+
+	var req service.UpdateProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	ip := c.ClientIP()
+	userAgent := c.GetHeader("User-Agent")
+	user, err := h.authService.UpdateProfile(c.Request.Context(), userID, req, ip, userAgent)
+	if err != nil {
+		if errors.Is(err, service.ErrUserNotFound) {
+			apiresponse.NotFound(c, "user not found")
+			return
+		}
+		apiresponse.InternalError(c, "failed to update profile: "+err.Error())
+		return
+	}
+
+	apiresponse.Success(c, responsedto.NewMeResponse(user))
+}
+
+// ChangePassword updates the current user's password
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+
+	var req service.ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+		return
+	}
+
+	ip := c.ClientIP()
+	userAgent := c.GetHeader("User-Agent")
+	if err := h.authService.ChangePassword(c.Request.Context(), userID, req, ip, userAgent); err != nil {
+		switch {
+		case errors.Is(err, service.ErrUserNotFound):
+			apiresponse.NotFound(c, "user not found")
+		case errors.Is(err, service.ErrIncorrectPassword):
+			apiresponse.BadRequest(c, "old password is incorrect")
+		case errors.Is(err, service.ErrWeakPassword):
+			apiresponse.BadRequest(c, "new password must be at least 8 characters")
+		default:
+			apiresponse.InternalError(c, "failed to change password: "+err.Error())
+		}
+		return
+	}
+
+	apiresponse.SuccessWithMessage(c, "password changed", nil)
 }

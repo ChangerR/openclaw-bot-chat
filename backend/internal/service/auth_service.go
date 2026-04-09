@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
@@ -18,6 +19,8 @@ var (
 	ErrUserAlreadyExists  = errors.New("user already exists")
 	ErrUsernameTaken      = errors.New("username already taken")
 	ErrEmailTaken         = errors.New("email already taken")
+	ErrIncorrectPassword  = errors.New("incorrect password")
+	ErrWeakPassword       = errors.New("new password does not meet policy")
 )
 
 // AuthService handles authentication operations
@@ -62,6 +65,19 @@ type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 
+type UpdateProfileRequest struct {
+	Nickname  *string `json:"nickname"`
+	Avatar    *string `json:"avatar"`
+	AvatarURL *string `json:"avatar_url"`
+}
+
+type ChangePasswordRequest struct {
+	OldPassword      string `json:"oldPassword"`
+	NewPassword      string `json:"newPassword"`
+	OldPasswordSnake string `json:"old_password"`
+	NewPasswordSnake string `json:"new_password"`
+}
+
 // Register creates a new user account
 func (s *AuthService) Register(ctx context.Context, req RegisterRequest, ip, userAgent string) (*TokenResponse, *model.User, error) {
 	// Check if username exists
@@ -102,11 +118,11 @@ func (s *AuthService) Register(ctx context.Context, req RegisterRequest, ip, use
 	}
 	// Audit log
 	s.auditRepo.CreateAsync(&model.AuditLog{
-		UserID:        &user.ID,
-		Action:        string(model.AuditActionRegister),
-		IPAddress:     &ip,
-		UserAgent:     &userAgent,
-		ResponseCode:  intPtr(201),
+		UserID:       &user.ID,
+		Action:       string(model.AuditActionRegister),
+		IPAddress:    &ip,
+		UserAgent:    &userAgent,
+		ResponseCode: intPtr(201),
 	})
 	return &TokenResponse{
 		AccessToken:  accessToken,
@@ -140,11 +156,11 @@ func (s *AuthService) Login(ctx context.Context, req LoginRequest, ip, userAgent
 	}
 	// Audit log
 	s.auditRepo.CreateAsync(&model.AuditLog{
-		UserID:        &user.ID,
-		Action:        string(model.AuditActionLogin),
-		IPAddress:     &ip,
-		UserAgent:     &userAgent,
-		ResponseCode:  intPtr(200),
+		UserID:       &user.ID,
+		Action:       string(model.AuditActionLogin),
+		IPAddress:    &ip,
+		UserAgent:    &userAgent,
+		ResponseCode: intPtr(200),
 	})
 	return &TokenResponse{
 		AccessToken:  accessToken,
@@ -176,6 +192,109 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenStr string) 
 	}, nil
 }
 
+func (s *AuthService) GetByID(ctx context.Context, userID uuid.UUID) (*model.User, error) {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, ErrUserNotFound
+	}
+	return user, nil
+}
+
+func (s *AuthService) UpdateProfile(ctx context.Context, userID uuid.UUID, req UpdateProfileRequest, ip, userAgent string) (*model.User, error) {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, ErrUserNotFound
+	}
+
+	updates := map[string]interface{}{}
+	if req.Nickname != nil {
+		trimmedNickname := strings.TrimSpace(*req.Nickname)
+		if trimmedNickname == "" {
+			updates["nickname"] = nil
+			user.Nickname = nil
+		} else {
+			updates["nickname"] = trimmedNickname
+			user.Nickname = &trimmedNickname
+		}
+	}
+
+	avatarValue := req.Avatar
+	if req.AvatarURL != nil {
+		avatarValue = req.AvatarURL
+	}
+	if avatarValue != nil {
+		trimmedAvatar := strings.TrimSpace(*avatarValue)
+		if trimmedAvatar == "" {
+			updates["avatar_url"] = nil
+			user.AvatarURL = nil
+		} else {
+			updates["avatar_url"] = trimmedAvatar
+			user.AvatarURL = &trimmedAvatar
+		}
+	}
+
+	if len(updates) == 0 {
+		return user, nil
+	}
+
+	if err := s.userRepo.UpdateFields(ctx, userID, updates); err != nil {
+		return nil, err
+	}
+
+	updatedUser, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.auditRepo.CreateAsync(&model.AuditLog{
+		UserID:       &userID,
+		Action:       string(model.AuditActionUpdateProfile),
+		IPAddress:    &ip,
+		UserAgent:    &userAgent,
+		ResponseCode: intPtr(200),
+	})
+
+	return updatedUser, nil
+}
+
+func (s *AuthService) ChangePassword(ctx context.Context, userID uuid.UUID, req ChangePasswordRequest, ip, userAgent string) error {
+	oldPassword, newPassword := req.normalizedPasswords()
+	if oldPassword == "" || newPassword == "" {
+		return ErrWeakPassword
+	}
+	if len(newPassword) < 8 {
+		return ErrWeakPassword
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return ErrUserNotFound
+	}
+	if !password.Check(oldPassword, user.PasswordHash) {
+		return ErrIncorrectPassword
+	}
+
+	hashedPassword, err := password.Hash(newPassword)
+	if err != nil {
+		return err
+	}
+	if err := s.userRepo.UpdateFields(ctx, userID, map[string]interface{}{
+		"password_hash": hashedPassword,
+	}); err != nil {
+		return err
+	}
+
+	s.auditRepo.CreateAsync(&model.AuditLog{
+		UserID:       &userID,
+		Action:       string(model.AuditActionChangePassword),
+		IPAddress:    &ip,
+		UserAgent:    &userAgent,
+		ResponseCode: intPtr(200),
+	})
+
+	return nil
+}
+
 // Logout records a logout audit event
 func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, ip, userAgent string) {
 	s.auditRepo.CreateAsync(&model.AuditLog{
@@ -189,4 +308,18 @@ func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, ip, userAgen
 
 func intPtr(i int) *int {
 	return &i
+}
+
+func (r ChangePasswordRequest) normalizedPasswords() (string, string) {
+	oldPassword := strings.TrimSpace(r.OldPassword)
+	if oldPassword == "" {
+		oldPassword = strings.TrimSpace(r.OldPasswordSnake)
+	}
+
+	newPassword := strings.TrimSpace(r.NewPassword)
+	if newPassword == "" {
+		newPassword = strings.TrimSpace(r.NewPasswordSnake)
+	}
+
+	return oldPassword, newPassword
 }

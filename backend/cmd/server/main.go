@@ -100,6 +100,7 @@ func main() {
 	} else {
 		defer mqttClient.Disconnect()
 	}
+	msgService.SetMQTTClient(mqttClient)
 
 	// --- WebSocket Hub ---
 	wsHub := websocket.NewHub(mqttClient, websocket.WSConfig{
@@ -238,6 +239,8 @@ func setupRoutes(
 	{
 		protected.POST("/auth/logout", authHandler.Logout)
 		protected.GET("/auth/me", authHandler.Me)
+		protected.PUT("/auth/me", authHandler.UpdateMe)
+		protected.POST("/auth/change-password", authHandler.ChangePassword)
 
 		// Bots
 		protected.GET("/bots", botHandler.List)
@@ -253,6 +256,8 @@ func setupRoutes(
 
 		// Messages
 		protected.GET("/messages", msgHandler.GetMessages)
+		protected.GET("/messages/*conversation_id", msgHandler.GetMessagesByConversation)
+		protected.POST("/messages", msgHandler.SendMessage)
 		protected.GET("/conversations", msgHandler.GetConversations)
 
 		// Groups

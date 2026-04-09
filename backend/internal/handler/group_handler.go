@@ -42,7 +42,16 @@ func (h *GroupHandler) List(c *gin.Context) {
 		apiresponse.InternalError(c, err.Error())
 		return
 	}
-	apiresponse.Paginated(c, responsedto.NewGroupResponses(groups), page, pageSize, total)
+	groupIDs := make([]uuid.UUID, 0, len(groups))
+	for _, group := range groups {
+		groupIDs = append(groupIDs, group.ID)
+	}
+	memberCounts, err := h.groupService.GetMemberCounts(c.Request.Context(), groupIDs)
+	if err != nil {
+		apiresponse.InternalError(c, err.Error())
+		return
+	}
+	apiresponse.Paginated(c, responsedto.NewGroupResponsesWithMemberCounts(groups, memberCounts), page, pageSize, total)
 }
 
 // Create creates a new group
@@ -64,7 +73,12 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		apiresponse.InternalError(c, err.Error())
 		return
 	}
-	apiresponse.Created(c, responsedto.NewGroupResponse(group))
+	memberCount, err := h.groupService.GetMemberCount(c.Request.Context(), group.ID)
+	if err != nil {
+		apiresponse.InternalError(c, err.Error())
+		return
+	}
+	apiresponse.Created(c, responsedto.NewGroupResponseWithMemberCount(group, memberCount))
 }
 
 // Get returns a group by ID
@@ -84,7 +98,12 @@ func (h *GroupHandler) Get(c *gin.Context) {
 		}
 		return
 	}
-	apiresponse.Success(c, responsedto.NewGroupResponse(group))
+	memberCount, err := h.groupService.GetMemberCount(c.Request.Context(), group.ID)
+	if err != nil {
+		apiresponse.InternalError(c, err.Error())
+		return
+	}
+	apiresponse.Success(c, responsedto.NewGroupResponseWithMemberCount(group, memberCount))
 }
 
 // Update updates a group
@@ -119,7 +138,12 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		}
 		return
 	}
-	apiresponse.Success(c, responsedto.NewGroupResponse(group))
+	memberCount, err := h.groupService.GetMemberCount(c.Request.Context(), group.ID)
+	if err != nil {
+		apiresponse.InternalError(c, err.Error())
+		return
+	}
+	apiresponse.Success(c, responsedto.NewGroupResponseWithMemberCount(group, memberCount))
 }
 
 // Delete deletes a group

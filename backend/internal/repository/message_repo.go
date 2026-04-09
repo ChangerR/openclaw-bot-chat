@@ -44,6 +44,14 @@ func (r *MessageRepository) GetByConversationID(ctx context.Context, conversatio
 	return msgs, err
 }
 
+func (r *MessageRepository) ExistsByConversationAndMessageID(ctx context.Context, conversationID string, messageID uuid.UUID) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.Message{}).
+		Where("conversation_id = ? AND message_id = ? AND is_deleted = false", conversationID, messageID).
+		Count(&count).Error
+	return count > 0, err
+}
+
 func (r *MessageRepository) CountByConversationID(ctx context.Context, conversationID string) (int64, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&model.Message{}).Where("conversation_id = ? AND is_deleted = false", conversationID).Count(&count).Error

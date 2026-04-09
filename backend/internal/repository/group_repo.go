@@ -118,3 +118,9 @@ func (r *GroupRepository) IsBotMember(ctx context.Context, groupID, botID uuid.U
 	err := r.db.WithContext(ctx).Model(&model.BotGroupMember{}).Where("group_id = ? AND bot_id = ? AND is_active = true", groupID, botID).Count(&count).Error
 	return count > 0, err
 }
+
+func (r *GroupRepository) CountBotMembers(ctx context.Context, groupID uuid.UUID) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.BotGroupMember{}).Where("group_id = ? AND is_active = true", groupID).Count(&count).Error
+	return count, err
+}
