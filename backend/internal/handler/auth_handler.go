@@ -5,8 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
+	responsedto "github.com/openclaw-bot-chat/backend/internal/model/response"
 	"github.com/openclaw-bot-chat/backend/internal/service"
-	"github.com/openclaw-bot-chat/backend/pkg/response"
+	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
 )
 
 // AuthHandler handles authentication endpoints
@@ -23,7 +24,7 @@ func NewAuthHandler(authService *service.AuthService) *AuthHandler {
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req service.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
 	ip := c.ClientIP()
@@ -32,24 +33,25 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrUsernameTaken):
-			response.Conflict(c, "username already taken")
+			apiresponse.Conflict(c, "username already taken")
 		case errors.Is(err, service.ErrEmailTaken):
-			response.Conflict(c, "email already taken")
+			apiresponse.Conflict(c, "email already taken")
 		default:
-			response.InternalError(c, "failed to register: "+err.Error())
+			apiresponse.InternalError(c, "failed to register: "+err.Error())
 		}
 		return
 	}
-	c.JSON(201, gin.H{
-		"code":    0,
-		"message": "registered successfully",
-		"data": gin.H{
-			"tokens": tokens,
-			"user": gin.H{
-				"id":       user.ID,
-				"username": user.Username,
-				"email":    user.Email,
+	c.JSON(201, apiresponse.Response{
+		Code:    int(apiresponse.CodeSuccess),
+		Message: "registered successfully",
+		Data: responsedto.AuthPayloadResponse{
+			Tokens: responsedto.TokenResponse{
+				AccessToken:  tokens.AccessToken,
+				RefreshToken: tokens.RefreshToken,
+				ExpiresIn:    tokens.ExpiresIn,
+				TokenType:    tokens.TokenType,
 			},
+			User: responsedto.NewAuthUserResponse(user),
 		},
 	})
 }
@@ -58,7 +60,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req service.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
 	ip := c.ClientIP()
@@ -66,22 +68,23 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	tokens, user, err := h.authService.Login(c.Request.Context(), req, ip, userAgent)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
-			response.Unauthorized(c, "invalid username or password")
+			apiresponse.Unauthorized(c, "invalid username or password")
 		} else {
-			response.InternalError(c, "failed to login: "+err.Error())
+			apiresponse.InternalError(c, "failed to login: "+err.Error())
 		}
 		return
 	}
-	c.JSON(200, gin.H{
-		"code":    0,
-		"message": "login successful",
-		"data": gin.H{
-			"tokens": tokens,
-			"user": gin.H{
-				"id":       user.ID,
-				"username": user.Username,
-				"email":    user.Email,
+	c.JSON(200, apiresponse.Response{
+		Code:    int(apiresponse.CodeSuccess),
+		Message: "login successful",
+		Data: responsedto.AuthPayloadResponse{
+			Tokens: responsedto.TokenResponse{
+				AccessToken:  tokens.AccessToken,
+				RefreshToken: tokens.RefreshToken,
+				ExpiresIn:    tokens.ExpiresIn,
+				TokenType:    tokens.TokenType,
 			},
+			User: responsedto.NewAuthUserResponse(user),
 		},
 	})
 }
@@ -90,18 +93,23 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	var req service.RefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
 	tokens, err := h.authService.RefreshToken(c.Request.Context(), req.RefreshToken)
 	if err != nil {
-		response.Unauthorized(c, "invalid or expired refresh token")
+		apiresponse.Unauthorized(c, "invalid or expired refresh token")
 		return
 	}
-	c.JSON(200, gin.H{
-		"code":    0,
-		"message": "token refreshed",
-		"data":    tokens,
+	c.JSON(200, apiresponse.Response{
+		Code:    int(apiresponse.CodeSuccess),
+		Message: "token refreshed",
+		Data: responsedto.TokenResponse{
+			AccessToken:  tokens.AccessToken,
+			RefreshToken: tokens.RefreshToken,
+			ExpiresIn:    tokens.ExpiresIn,
+			TokenType:    tokens.TokenType,
+		},
 	})
 }
 
@@ -109,29 +117,29 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 func (h *AuthHandler) Logout(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
+		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 	ip := c.ClientIP()
 	userAgent := c.GetHeader("User-Agent")
 	h.authService.Logout(c.Request.Context(), userID, ip, userAgent)
-	response.Success(c, gin.H{"message": "logged out"})
+	apiresponse.Success(c, gin.H{"message": "logged out"})
 }
 
 // Me returns the current user's info
 func (h *AuthHandler) Me(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
+		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 	username, _ := middleware.GetUsername(c)
-	c.JSON(200, gin.H{
-		"code":    0,
-		"message": "success",
-		"data": gin.H{
-			"id":       userID,
-			"username": username,
+	c.JSON(200, apiresponse.Response{
+		Code:    int(apiresponse.CodeSuccess),
+		Message: "success",
+		Data: responsedto.MeResponse{
+			ID:       userID,
+			Username: username,
 		},
 	})
 }

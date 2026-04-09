@@ -5,8 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
+	responsedto "github.com/openclaw-bot-chat/backend/internal/model/response"
 	"github.com/openclaw-bot-chat/backend/internal/service"
-	"github.com/openclaw-bot-chat/backend/pkg/response"
+	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
 )
 
 // MessageHandler handles message endpoints
@@ -23,7 +24,7 @@ func NewMessageHandler(msgService *service.MessageService) *MessageHandler {
 func (h *MessageHandler) GetMessages(c *gin.Context) {
 	conversationID := c.Query("conversation_id")
 	if conversationID == "" {
-		response.BadRequest(c, "conversation_id is required")
+		apiresponse.BadRequest(c, "conversation_id is required")
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -35,22 +36,17 @@ func (h *MessageHandler) GetMessages(c *gin.Context) {
 
 	messages, err := h.msgService.GetMessages(c.Request.Context(), conversationID, limit, beforeSeq)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		apiresponse.InternalError(c, err.Error())
 		return
 	}
-
-	c.JSON(200, gin.H{
-		"code":    0,
-		"message": "success",
-		"data":    messages,
-	})
+	apiresponse.Success(c, responsedto.NewMessageResponses(messages))
 }
 
 // GetConversations returns the list of conversations for the current user
 func (h *MessageHandler) GetConversations(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
+		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -59,14 +55,18 @@ func (h *MessageHandler) GetConversations(c *gin.Context) {
 	}
 	conversations, err := h.msgService.GetConversationList(c.Request.Context(), userID, limit)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		apiresponse.InternalError(c, err.Error())
 		return
 	}
-	c.JSON(200, gin.H{
-		"code":    0,
-		"message": "success",
-		"data":    conversations,
-	})
+	items := make([]responsedto.ConversationInfoResponse, 0, len(conversations))
+	for _, conversation := range conversations {
+		items = append(items, responsedto.ConversationInfoResponse{
+			ConversationID: conversation.ConversationID,
+			LastMessage:    responsedto.NewMessageResponse(conversation.LastMessage),
+			UnreadCount:    conversation.UnreadCount,
+		})
+	}
+	apiresponse.Success(c, items)
 }
 
 // MessageQuery represents query params for messages

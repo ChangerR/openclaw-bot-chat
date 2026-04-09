@@ -7,8 +7,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
+	responsedto "github.com/openclaw-bot-chat/backend/internal/model/response"
 	"github.com/openclaw-bot-chat/backend/internal/service"
-	"github.com/openclaw-bot-chat/backend/pkg/response"
+	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
 )
 
 // GroupHandler handles group endpoints
@@ -25,7 +26,7 @@ func NewGroupHandler(groupService *service.GroupService) *GroupHandler {
 func (h *GroupHandler) List(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
+		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -38,32 +39,32 @@ func (h *GroupHandler) List(c *gin.Context) {
 	}
 	groups, total, err := h.groupService.ListByUser(c.Request.Context(), userID, page, pageSize)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		apiresponse.InternalError(c, err.Error())
 		return
 	}
-	response.Paginated(c, groups, page, pageSize, total)
+	apiresponse.Paginated(c, responsedto.NewGroupResponses(groups), page, pageSize, total)
 }
 
 // Create creates a new group
 func (h *GroupHandler) Create(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
+		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 	var req service.CreateGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
 	ip := c.ClientIP()
 	userAgent := c.GetHeader("User-Agent")
 	group, err := h.groupService.Create(c.Request.Context(), req, userID, ip, userAgent)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		apiresponse.InternalError(c, err.Error())
 		return
 	}
-	response.Created(c, group)
+	apiresponse.Created(c, responsedto.NewGroupResponse(group))
 }
 
 // Get returns a group by ID
@@ -71,37 +72,37 @@ func (h *GroupHandler) Get(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		response.BadRequest(c, "invalid group id")
+		apiresponse.BadRequest(c, "invalid group id")
 		return
 	}
 	group, err := h.groupService.GetByID(c.Request.Context(), id)
 	if err != nil {
 		if errors.Is(err, service.ErrGroupNotFound) {
-			response.NotFound(c, "group not found")
+			apiresponse.NotFound(c, "group not found")
 		} else {
-			response.InternalError(c, err.Error())
+			apiresponse.InternalError(c, err.Error())
 		}
 		return
 	}
-	response.Success(c, group)
+	apiresponse.Success(c, responsedto.NewGroupResponse(group))
 }
 
 // Update updates a group
 func (h *GroupHandler) Update(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
+		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		response.BadRequest(c, "invalid group id")
+		apiresponse.BadRequest(c, "invalid group id")
 		return
 	}
 	var req service.UpdateGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
 	ip := c.ClientIP()
@@ -110,28 +111,28 @@ func (h *GroupHandler) Update(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrGroupNotFound):
-			response.NotFound(c, "group not found")
+			apiresponse.NotFound(c, "group not found")
 		case errors.Is(err, service.ErrNotGroupOwner):
-			response.Forbidden(c, "you are not the owner of this group")
+			apiresponse.Forbidden(c, "you are not the owner of this group")
 		default:
-			response.InternalError(c, err.Error())
+			apiresponse.InternalError(c, err.Error())
 		}
 		return
 	}
-	response.Success(c, group)
+	apiresponse.Success(c, responsedto.NewGroupResponse(group))
 }
 
 // Delete deletes a group
 func (h *GroupHandler) Delete(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
+		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		response.BadRequest(c, "invalid group id")
+		apiresponse.BadRequest(c, "invalid group id")
 		return
 	}
 	ip := c.ClientIP()
@@ -139,15 +140,15 @@ func (h *GroupHandler) Delete(c *gin.Context) {
 	if err := h.groupService.Delete(c.Request.Context(), id, userID, ip, userAgent); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGroupNotFound):
-			response.NotFound(c, "group not found")
+			apiresponse.NotFound(c, "group not found")
 		case errors.Is(err, service.ErrNotGroupOwner):
-			response.Forbidden(c, "you are not the owner of this group")
+			apiresponse.Forbidden(c, "you are not the owner of this group")
 		default:
-			response.InternalError(c, err.Error())
+			apiresponse.InternalError(c, err.Error())
 		}
 		return
 	}
-	response.Success(c, gin.H{"message": "group deleted"})
+	apiresponse.Success(c, gin.H{"message": "group deleted"})
 }
 
 // --- Members ---
@@ -156,22 +157,22 @@ func (h *GroupHandler) Delete(c *gin.Context) {
 func (h *GroupHandler) AddMember(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
+		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 	groupIDStr := c.Param("id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
-		response.BadRequest(c, "invalid group id")
+		apiresponse.BadRequest(c, "invalid group id")
 		return
 	}
 	var req service.AddMemberRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
+		apiresponse.BadRequest(c, "invalid request: "+err.Error())
 		return
 	}
 	if req.UserID == nil && req.BotID == nil {
-		response.BadRequest(c, "either user_id or bot_id is required")
+		apiresponse.BadRequest(c, "either user_id or bot_id is required")
 		return
 	}
 	ip := c.ClientIP()
@@ -179,36 +180,36 @@ func (h *GroupHandler) AddMember(c *gin.Context) {
 	if err := h.groupService.AddMember(c.Request.Context(), groupID, userID, req, ip, userAgent); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGroupNotFound):
-			response.NotFound(c, "group not found")
+			apiresponse.NotFound(c, "group not found")
 		case errors.Is(err, service.ErrAlreadyMember):
-			response.Conflict(c, "user is already a member")
+			apiresponse.Conflict(c, "user is already a member")
 		case errors.Is(err, service.ErrGroupFull):
-			response.BadRequest(c, "group is full")
+			apiresponse.BadRequest(c, "group is full")
 		default:
-			response.InternalError(c, err.Error())
+			apiresponse.InternalError(c, err.Error())
 		}
 		return
 	}
-	response.Success(c, gin.H{"message": "member added"})
+	apiresponse.Success(c, gin.H{"message": "member added"})
 }
 
 // RemoveMember removes a user from a group
 func (h *GroupHandler) RemoveMember(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Unauthorized(c, "unauthorized")
+		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 	groupIDStr := c.Param("id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
-		response.BadRequest(c, "invalid group id")
+		apiresponse.BadRequest(c, "invalid group id")
 		return
 	}
 	targetIDStr := c.Param("uid")
 	targetID, err := uuid.Parse(targetIDStr)
 	if err != nil {
-		response.BadRequest(c, "invalid user id")
+		apiresponse.BadRequest(c, "invalid user id")
 		return
 	}
 	ip := c.ClientIP()
@@ -216,15 +217,15 @@ func (h *GroupHandler) RemoveMember(c *gin.Context) {
 	if err := h.groupService.RemoveMember(c.Request.Context(), groupID, targetID, userID, ip, userAgent); err != nil {
 		switch {
 		case errors.Is(err, service.ErrGroupNotFound):
-			response.NotFound(c, "group not found")
+			apiresponse.NotFound(c, "group not found")
 		case errors.Is(err, service.ErrNotGroupMember):
-			response.NotFound(c, "member not found")
+			apiresponse.NotFound(c, "member not found")
 		default:
-			response.InternalError(c, err.Error())
+			apiresponse.InternalError(c, err.Error())
 		}
 		return
 	}
-	response.Success(c, gin.H{"message": "member removed"})
+	apiresponse.Success(c, gin.H{"message": "member removed"})
 }
 
 // GetMembers returns all members of a group
@@ -232,16 +233,16 @@ func (h *GroupHandler) GetMembers(c *gin.Context) {
 	groupIDStr := c.Param("id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
-		response.BadRequest(c, "invalid group id")
+		apiresponse.BadRequest(c, "invalid group id")
 		return
 	}
 	users, bots, err := h.groupService.ListMembers(c.Request.Context(), groupID)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		apiresponse.InternalError(c, err.Error())
 		return
 	}
-	response.Success(c, gin.H{
-		"users": users,
-		"bots":  bots,
+	apiresponse.Success(c, responsedto.GroupMembersResponse{
+		Users: responsedto.NewGroupMemberResponses(users),
+		Bots:  responsedto.NewBotGroupMemberResponses(bots),
 	})
 }
