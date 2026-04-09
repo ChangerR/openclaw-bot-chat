@@ -79,9 +79,9 @@ func main() {
 
 	// --- Services ---
 	authService := service.NewAuthService(userRepo, auditRepo, jwtManager)
-	botService := service.NewBotService(botRepo, keyRepo, auditRepo, cfg.MQTT.TopicPrefix)
-	msgService := service.NewMessageService(msgRepo, auditRepo)
-	groupService := service.NewGroupService(groupRepo, auditRepo, cfg.MQTT.TopicPrefix)
+	botService := service.NewBotService(botRepo, keyRepo, auditRepo)
+	msgService := service.NewMessageService(msgRepo, botRepo, groupRepo, auditRepo)
+	groupService := service.NewGroupService(groupRepo, botRepo, auditRepo)
 
 	// --- MQTT Client ---
 	mqttClient := mqtt.NewClient(mqtt.MQTTConfig{
@@ -112,7 +112,7 @@ func main() {
 		MaxMessageSize:     cfg.WebSocket.MaxMessageSize,
 		SendQueueSize:      cfg.WebSocket.SendQueueSize,
 		BroadcastQueueSize: cfg.WebSocket.BroadcastQueueSize,
-	}, log)
+	}, log, msgService)
 	wsHub.AttachMQTTBridge()
 	go wsHub.Run()
 	defer wsHub.Stop()
@@ -124,7 +124,7 @@ func main() {
 	groupHandler := handler.NewGroupHandler(groupService)
 
 	// --- Routes ---
-	setupRoutes(router, authHandler, botHandler, msgHandler, groupHandler, jwtManager, wsHub, log)
+	setupRoutes(router, authHandler, botHandler, msgHandler, groupHandler, botService, jwtManager, wsHub, log)
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -215,6 +215,7 @@ func setupRoutes(
 	botHandler *handler.BotHandler,
 	msgHandler *handler.MessageHandler,
 	groupHandler *handler.GroupHandler,
+	botService *service.BotService,
 	jwtManager *jwt.Manager,
 	wsHub *websocket.Hub,
 	log zerolog.Logger,
@@ -232,6 +233,9 @@ func setupRoutes(
 		auth.POST("/login", authHandler.Login)
 		auth.POST("/refresh", authHandler.Refresh)
 	}
+
+	// WebSocket accepts either a user JWT or a validated bot key.
+	api.GET("/ws", middleware.OptionalBotKeyAuth(botService), websocket.HandleWebSocket(jwtManager, wsHub, log))
 
 	// Protected routes
 	protected := api.Group("")
@@ -269,9 +273,6 @@ func setupRoutes(
 		protected.POST("/groups/:id/members", groupHandler.AddMember)
 		protected.DELETE("/groups/:id/members/:uid", groupHandler.RemoveMember)
 		protected.GET("/groups/:id/members", groupHandler.GetMembers)
-
-		// WebSocket
-		protected.GET("/ws", websocket.HandleWebSocket(jwtManager, wsHub, log))
 	}
 
 	_ = uuid.UUID{} // suppress unused import if needed

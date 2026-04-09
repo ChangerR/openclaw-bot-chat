@@ -1,7 +1,9 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/openclaw-bot-chat/backend/internal/middleware"
 	"github.com/openclaw-bot-chat/backend/pkg/jwt"
 	"github.com/rs/zerolog"
 )
@@ -34,6 +37,7 @@ type ServerMessage struct {
 type Client struct {
 	ID       uuid.UUID
 	UserID   uuid.UUID
+	BotID    *uuid.UUID
 	Username string
 	conn     *websocket.Conn
 	hub      *Hub
@@ -43,8 +47,8 @@ type Client struct {
 	log      zerolog.Logger
 }
 
-// NewClient creates a new WebSocket client.
-func NewClient(conn *websocket.Conn, userID uuid.UUID, username string, hub *Hub, log zerolog.Logger) *Client {
+// NewUserClient creates a new WebSocket client for a user session.
+func NewUserClient(conn *websocket.Conn, userID uuid.UUID, username string, hub *Hub, log zerolog.Logger) *Client {
 	topics := map[string]bool{
 		PersonalTopic(hub.topicPrefix(), userID): true,
 	}
@@ -57,6 +61,20 @@ func NewClient(conn *websocket.Conn, userID uuid.UUID, username string, hub *Hub
 		hub:      hub,
 		send:     make(chan []byte, hub.cfg.SendQueueSize),
 		topics:   topics,
+		log:      log,
+	}
+}
+
+// NewBotClient creates a new WebSocket client for a bot session.
+func NewBotClient(conn *websocket.Conn, botID uuid.UUID, botName string, hub *Hub, log zerolog.Logger) *Client {
+	return &Client{
+		ID:       uuid.New(),
+		BotID:    &botID,
+		Username: botName,
+		conn:     conn,
+		hub:      hub,
+		send:     make(chan []byte, hub.cfg.SendQueueSize),
+		topics:   make(map[string]bool),
 		log:      log,
 	}
 }
@@ -148,6 +166,10 @@ func (c *Client) handleMessage(message IncomingMessage) {
 			c.sendError("topic is required", message.ID)
 			return
 		}
+		if err := c.authorizeSubscribe(message.Topic); err != nil {
+			c.sendError(err.Error(), message.ID)
+			return
+		}
 		c.subscribe(message.Topic)
 		c.sendAck(message.ID, "subscribed")
 	case TypeUnsubscribe:
@@ -160,6 +182,10 @@ func (c *Client) handleMessage(message IncomingMessage) {
 	case TypePublish:
 		if message.Topic == "" {
 			c.sendError("topic is required", message.ID)
+			return
+		}
+		if err := c.authorizePublish(message.Topic, message.Payload); err != nil {
+			c.sendError(err.Error(), message.ID)
 			return
 		}
 		if c.hub.mqttClient == nil || !c.hub.mqttClient.IsConnected() {
@@ -176,6 +202,42 @@ func (c *Client) handleMessage(message IncomingMessage) {
 	default:
 		c.sendError("unknown message type: "+message.Type, message.ID)
 	}
+}
+
+func (c *Client) authorizeSubscribe(topic string) error {
+	if c.hub.authorizer == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if c.BotID != nil {
+		return c.hub.authorizer.CanBotSubscribeTopic(ctx, *c.BotID, topic)
+	}
+	if c.UserID != uuid.Nil {
+		return c.hub.authorizer.CanUserSubscribeTopic(ctx, c.UserID, topic)
+	}
+
+	return errors.New("missing authenticated principal")
+}
+
+func (c *Client) authorizePublish(topic string, payload json.RawMessage) error {
+	if c.hub.authorizer == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if c.BotID != nil {
+		return c.hub.authorizer.CanBotPublishTopic(ctx, *c.BotID, topic, payload)
+	}
+	if c.UserID != uuid.Nil {
+		return c.hub.authorizer.CanUserPublishTopic(ctx, c.UserID, topic, payload)
+	}
+
+	return errors.New("missing authenticated principal")
 }
 
 func (c *Client) subscribe(topic string) {
@@ -243,11 +305,26 @@ func mustMarshal(value interface{}) []byte {
 	return data
 }
 
-// HandleWebSocket upgrades HTTP to WebSocket with JWT auth.
+// HandleWebSocket upgrades HTTP to WebSocket with JWT or bot-key auth.
 func HandleWebSocket(jwtManager *jwt.Manager, hub *Hub, log zerolog.Logger) gin.HandlerFunc {
 	upgrader := hub.cfg.upgrader()
 
 	return func(c *gin.Context) {
+		if bot, ok := middleware.GetBot(c); ok {
+			conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+			if err != nil {
+				log.Warn().Err(err).Msg("WebSocket upgrade failed")
+				return
+			}
+
+			client := NewBotClient(conn, bot.ID, bot.Name, hub, log)
+			hub.registerClient(client)
+
+			go client.WritePump()
+			go client.ReadPump()
+			return
+		}
+
 		tokenStr := c.Query("token")
 		if tokenStr == "" {
 			auth := c.GetHeader("Authorization")
@@ -257,7 +334,7 @@ func HandleWebSocket(jwtManager *jwt.Manager, hub *Hub, log zerolog.Logger) gin.
 		}
 
 		if tokenStr == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing token or X-Bot-Key"})
 			return
 		}
 
@@ -273,7 +350,7 @@ func HandleWebSocket(jwtManager *jwt.Manager, hub *Hub, log zerolog.Logger) gin.
 			return
 		}
 
-		client := NewClient(conn, claims.UserID, claims.Username, hub, log)
+		client := NewUserClient(conn, claims.UserID, claims.Username, hub, log)
 		hub.registerClient(client)
 
 		go client.WritePump()

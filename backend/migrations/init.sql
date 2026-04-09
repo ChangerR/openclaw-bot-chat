@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS messages (
     is_read         BOOLEAN     NOT NULL DEFAULT false,
     is_deleted      BOOLEAN     NOT NULL DEFAULT false,
     seq             BIGINT      NOT NULL DEFAULT 0,  -- for pagination
+    CONSTRAINT uq_messages_conversation_seq UNIQUE (conversation_id, seq),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

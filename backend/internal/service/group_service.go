@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
@@ -21,17 +20,21 @@ var (
 
 // GroupService handles group operations
 type GroupService struct {
-	groupRepo   *repository.GroupRepository
-	auditRepo   *repository.AuditLogRepository
-	topicPrefix string
+	groupRepo *repository.GroupRepository
+	botRepo   *repository.BotRepository
+	auditRepo *repository.AuditLogRepository
 }
 
 // NewGroupService creates a new group service
-func NewGroupService(groupRepo *repository.GroupRepository, auditRepo *repository.AuditLogRepository, topicPrefix string) *GroupService {
+func NewGroupService(
+	groupRepo *repository.GroupRepository,
+	botRepo *repository.BotRepository,
+	auditRepo *repository.AuditLogRepository,
+) *GroupService {
 	return &GroupService{
-		groupRepo:   groupRepo,
-		auditRepo:   auditRepo,
-		topicPrefix: topicPrefix,
+		groupRepo: groupRepo,
+		botRepo:   botRepo,
+		auditRepo: auditRepo,
 	}
 }
 
@@ -59,7 +62,6 @@ func (s *GroupService) Create(ctx context.Context, req CreateGroupRequest, owner
 		Description: req.Description,
 		AvatarURL:   req.AvatarURL,
 		OwnerID:     ownerID,
-		MQTTTopic:   strPtr(fmt.Sprintf("%s/group/%s", s.topicPrefix, uuid.New().String())),
 		IsActive:    true,
 		MaxMembers:  req.MaxMembers,
 	}
@@ -184,6 +186,9 @@ func (s *GroupService) AddMember(ctx context.Context, groupID, requesterID uuid.
 	if !group.IsActive {
 		return errors.New("group is not active")
 	}
+	if err := s.ensureCanManageMembers(ctx, group, requesterID); err != nil {
+		return err
+	}
 
 	if req.UserID != nil {
 		// Check if already a member
@@ -195,7 +200,7 @@ func (s *GroupService) AddMember(ctx context.Context, groupID, requesterID uuid.
 			return ErrAlreadyMember
 		}
 		// Check group capacity
-		count, err := s.groupRepo.CountMembers(ctx, groupID)
+		count, err := s.GetMemberCount(ctx, groupID)
 		if err != nil {
 			return err
 		}
@@ -234,6 +239,20 @@ func (s *GroupService) AddMember(ctx context.Context, groupID, requesterID uuid.
 		if exists {
 			return ErrAlreadyBotMember
 		}
+		bot, err := s.botRepo.GetByID(ctx, *req.BotID)
+		if err != nil {
+			return ErrBotNotFound
+		}
+		if bot.OwnerID != requesterID {
+			return ErrNotBotOwner
+		}
+		count, err := s.GetMemberCount(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		if count >= int64(group.MaxMembers) {
+			return ErrGroupFull
+		}
 		role := req.Role
 		if role == "" {
 			role = model.GroupRoleMember
@@ -258,6 +277,21 @@ func (s *GroupService) AddMember(ctx context.Context, groupID, requesterID uuid.
 			UserAgent:    &userAgent,
 			ResponseCode: intPtr(200),
 		})
+	}
+	return nil
+}
+
+func (s *GroupService) ensureCanManageMembers(ctx context.Context, group *model.Group, requesterID uuid.UUID) error {
+	if group.OwnerID == requesterID {
+		return nil
+	}
+
+	member, err := s.groupRepo.GetMember(ctx, group.ID, requesterID)
+	if err != nil {
+		return ErrNotGroupMember
+	}
+	if member.Role != model.GroupRoleAdmin {
+		return ErrGroupAdminRequired
 	}
 	return nil
 }

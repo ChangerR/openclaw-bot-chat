@@ -1,12 +1,21 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/mqtt"
 	"github.com/rs/zerolog"
 )
+
+type TopicAuthorizer interface {
+	CanUserSubscribeTopic(ctx context.Context, userID uuid.UUID, topic string) error
+	CanUserPublishTopic(ctx context.Context, userID uuid.UUID, topic string, payload json.RawMessage) error
+	CanBotSubscribeTopic(ctx context.Context, botID uuid.UUID, topic string) error
+	CanBotPublishTopic(ctx context.Context, botID uuid.UUID, topic string, payload json.RawMessage) error
+}
 
 type broadcastMessage struct {
 	topic string
@@ -24,12 +33,13 @@ type Hub struct {
 	mu         sync.RWMutex
 	log        zerolog.Logger
 	mqttClient *mqtt.Client
+	authorizer TopicAuthorizer
 	cfg        WSConfig
 	wg         sync.WaitGroup
 }
 
 // NewHub creates a new Hub instance.
-func NewHub(mqttClient *mqtt.Client, cfg WSConfig, log zerolog.Logger) *Hub {
+func NewHub(mqttClient *mqtt.Client, cfg WSConfig, log zerolog.Logger, authorizer TopicAuthorizer) *Hub {
 	cfg = cfg.withDefaults()
 
 	return &Hub{
@@ -40,6 +50,7 @@ func NewHub(mqttClient *mqtt.Client, cfg WSConfig, log zerolog.Logger) *Hub {
 		done:       make(chan struct{}),
 		log:        log,
 		mqttClient: mqttClient,
+		authorizer: authorizer,
 		cfg:        cfg,
 	}
 }

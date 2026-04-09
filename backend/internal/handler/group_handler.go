@@ -205,8 +205,14 @@ func (h *GroupHandler) AddMember(c *gin.Context) {
 		switch {
 		case errors.Is(err, service.ErrGroupNotFound):
 			apiresponse.NotFound(c, "group not found")
+		case errors.Is(err, service.ErrGroupAdminRequired), errors.Is(err, service.ErrNotBotOwner), errors.Is(err, service.ErrNotGroupMember):
+			apiresponse.Forbidden(c, err.Error())
+		case errors.Is(err, service.ErrBotNotFound):
+			apiresponse.NotFound(c, "bot not found")
 		case errors.Is(err, service.ErrAlreadyMember):
 			apiresponse.Conflict(c, "user is already a member")
+		case errors.Is(err, service.ErrAlreadyBotMember):
+			apiresponse.Conflict(c, "bot is already a member")
 		case errors.Is(err, service.ErrGroupFull):
 			apiresponse.BadRequest(c, "group is full")
 		default:

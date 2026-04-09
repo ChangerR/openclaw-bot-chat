@@ -24,10 +24,10 @@ redis:
   pool_size: 10
 
 mqtt:
-  broker: "tcp://localhost:1883"
+  broker: "tcp://127.0.0.1:1883"
   client_id: "openclaw-backend"
-  username: ""
-  password: ""
+  username: "openclaw_backend"
+  password: "change-me-in-production"  # replace outside local/dev
   topic_prefix: "chat"
   qos: 1
   auto_reconnect: true

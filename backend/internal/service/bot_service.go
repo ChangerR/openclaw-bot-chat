@@ -24,19 +24,17 @@ var (
 
 // BotService handles bot operations
 type BotService struct {
-	botRepo     *repository.BotRepository
-	keyRepo     *repository.BotKeyRepository
-	auditRepo   *repository.AuditLogRepository
-	topicPrefix string
+	botRepo   *repository.BotRepository
+	keyRepo   *repository.BotKeyRepository
+	auditRepo *repository.AuditLogRepository
 }
 
 // NewBotService creates a new bot service
-func NewBotService(botRepo *repository.BotRepository, keyRepo *repository.BotKeyRepository, auditRepo *repository.AuditLogRepository, topicPrefix string) *BotService {
+func NewBotService(botRepo *repository.BotRepository, keyRepo *repository.BotKeyRepository, auditRepo *repository.AuditLogRepository) *BotService {
 	return &BotService{
-		botRepo:     botRepo,
-		keyRepo:     keyRepo,
-		auditRepo:   auditRepo,
-		topicPrefix: topicPrefix,
+		botRepo:   botRepo,
+		keyRepo:   keyRepo,
+		auditRepo: auditRepo,
 	}
 }
 
@@ -73,8 +71,6 @@ func (s *BotService) Create(ctx context.Context, req CreateBotRequest, ownerID u
 		IsPublic:    req.IsPublic,
 		Config:      req.Config,
 	}
-	topic := fmt.Sprintf("%s/bot/%s", s.topicPrefix, uuid.New().String())
-	bot.MQTTTopic = &topic
 
 	if err := s.botRepo.Create(ctx, bot); err != nil {
 		return nil, err

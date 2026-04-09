@@ -108,6 +108,13 @@ func Load(configPath string) (*Config, error) {
 	// Allow environment variable overrides
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	bindEnvKeys(v,
+		"database.host",
+		"redis.host",
+		"mqtt.broker",
+		"mqtt.username",
+		"mqtt.password",
+	)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -180,4 +187,10 @@ func Load(configPath string) (*Config, error) {
 // ConnMaxLifetimeDuration returns the connection max lifetime as time.Duration
 func (d *DatabaseConfig) ConnMaxLifetimeDuration() time.Duration {
 	return time.Duration(d.ConnMaxLifetime) * time.Second
+}
+
+func bindEnvKeys(v *viper.Viper, keys ...string) {
+	for _, key := range keys {
+		_ = v.BindEnv(key)
+	}
 }

@@ -113,7 +113,7 @@ const (
 
 type Message struct {
 	ID             int64      `gorm:"primaryKey;autoIncrement"`
-	ConversationID string     `gorm:"type:varchar(256);not null;index:idx_messages_conversation_id"`
+	ConversationID string     `gorm:"type:varchar(256);not null;index:idx_messages_conversation_id;uniqueIndex:udx_messages_conversation_seq"`
 	MessageID      uuid.UUID  `gorm:"type:uuid;not null;default:uuid_generate_v4()"`
 	SenderType     SenderType `gorm:"type:varchar(16);not null"`
 	SenderID       *uuid.UUID `gorm:"type:uuid"`
@@ -127,7 +127,7 @@ type Message struct {
 	QOS            int        `gorm:"type:smallint;not null;default:1"`
 	IsRead         bool       `gorm:"not null;default:false"`
 	IsDeleted      bool       `gorm:"not null;default:false"`
-	Seq            int64      `gorm:"not null;default:0;index:idx_messages_seq"`
+	Seq            int64      `gorm:"not null;default:0;index:idx_messages_seq;uniqueIndex:udx_messages_conversation_seq"`
 	CreatedAt      time.Time  `gorm:"not null;default:now();index:idx_messages_created_at"`
 }
 

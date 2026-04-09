@@ -105,36 +105,37 @@ go run ./cmd/server
 ### Realtime
 | Endpoint | Description |
 |----------|-------------|
-| ws://localhost:9001 | MQTT over WebSocket broker (primary path for frontend `mqtt.js`) |
-| GET /api/v1/ws?token=<jwt> | Custom WebSocket hub (backup bridge) |
+| GET /api/v1/ws?token=<jwt> | User WebSocket session (JWT) |
+| GET /api/v1/ws + `X-Bot-Key` | Bot WebSocket session (validated bot key) |
 
 ## MQTT Topics
 
+MQTT routing only trusts the topic path itself. `bots.mqtt_topic` and `groups.mqtt_topic` are legacy fields and are not the route source.
+
 | Topic | Description |
 |-------|-------------|
-| `chat/user/{userId}/to/bot/{botId}` | User → Bot |
-| `chat/bot/{botId}/to/user/{userId}` | Bot → User |
-| `chat/bot/{botIdA}/to/bot/{botIdB}` | Bot ↔ Bot |
-| `chat/group/{groupId}` | Group chat |
-| `broadcast/all` | Broadcast |
+| `chat/{senderType}/{senderId}/to/{receiverType}/{receiverId}` | Direct route for `user` / `bot` peers |
+| `chat/group/{groupId}` | Group route |
 
 ## WebSocket Protocol
 
-Connect: `GET /api/v1/ws?token=<jwt>`
+Connect as user: `GET /api/v1/ws?token=<jwt>`
+
+Connect as bot: `GET /api/v1/ws` with header `X-Bot-Key: <bot-key>`
 
 **Subscribe:**
 ```json
-{"type": "subscribe", "topic": "chat/user/xxx/to/bot/yyy"}
+{"type": "subscribe", "topic": "chat/bot/xxx/to/bot/yyy"}
 ```
 
 **Publish:**
 ```json
-{"type": "publish", "topic": "chat/user/xxx/to/bot/yyy", "payload": {"content": "hello"}}
+{"type": "publish", "topic": "chat/bot/xxx/to/bot/yyy", "payload": {"from": {"type": "bot", "id": "xxx"}, "to": {"type": "bot", "id": "yyy"}, "content": {"type": "text", "body": "hello"}}}
 ```
 
 **Incoming Message:**
 ```json
-{"type": "message", "topic": "chat/user/xxx/to/bot/yyy", "payload": {...}}
+{"type": "message", "topic": "chat/bot/xxx/to/bot/yyy", "payload": {...}}
 ```
 
 ## Bot Key Format

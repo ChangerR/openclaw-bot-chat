@@ -32,13 +32,23 @@ services:
 
   mosquitto:
     image: eclipse-mosquitto:2
-    ports:
-      - "1883:1883"
-      - "9001:9001"
+    expose:
+      - "1883"
+      - "9001"
+    environment:
+      MQTT_USERNAME: openclaw_backend
+      MQTT_PASSWORD: change-me-in-production
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mosquitto_passwd -b -c /mosquitto/config/passwd "$$MQTT_USERNAME" "$$MQTT_PASSWORD"
+        exec mosquitto -c /mosquitto/config/mosquitto.conf
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto.acl:/mosquitto/config/aclfile
     healthcheck:
-      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      test: ["CMD", "mosquitto_sub", "-u", "$$MQTT_USERNAME", "-P", "$$MQTT_PASSWORD", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -58,6 +68,11 @@ services:
       - ./config.yaml:/app/config.yaml
     environment:
       - TZ=Asia/Shanghai
+      - DATABASE_HOST=postgres
+      - REDIS_HOST=redis
+      - MQTT_BROKER=tcp://mosquitto:1883
+      - MQTT_USERNAME=openclaw_backend
+      - MQTT_PASSWORD=change-me-in-production
 
 volumes:
   postgres_data:

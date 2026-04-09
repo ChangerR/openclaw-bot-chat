@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,11 @@ func NewMessageHandler(msgService *service.MessageService) *MessageHandler {
 
 // GetMessages returns messages for a conversation
 func (h *MessageHandler) GetMessages(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
 	conversationID := service.NormalizeConversationReference(c.Query("conversation_id"))
 	if conversationID == "" {
 		apiresponse.BadRequest(c, "conversation_id is required")
@@ -36,6 +42,17 @@ func (h *MessageHandler) GetMessages(c *gin.Context) {
 	if limit < 1 || limit > 200 {
 		limit = 50
 	}
+	if err := h.msgService.CanUserAccessConversation(c.Request.Context(), userID, conversationID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrConversationAccessDenied):
+			apiresponse.Forbidden(c, err.Error())
+		case errors.Is(err, service.ErrInvalidMessageRoute):
+			apiresponse.BadRequest(c, err.Error())
+		default:
+			apiresponse.InternalError(c, err.Error())
+		}
+		return
+	}
 
 	messages, err := h.msgService.GetMessages(c.Request.Context(), conversationID, limit, beforeSeq)
 	if err != nil {
@@ -47,6 +64,11 @@ func (h *MessageHandler) GetMessages(c *gin.Context) {
 
 // GetMessagesByConversation returns messages using a REST-style conversation path
 func (h *MessageHandler) GetMessagesByConversation(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
 	conversationID := service.NormalizeConversationReference(c.Param("conversation_id"))
 	if conversationID == "" {
 		apiresponse.BadRequest(c, "conversation_id is required")
@@ -60,6 +82,17 @@ func (h *MessageHandler) GetMessagesByConversation(c *gin.Context) {
 	}
 	if limit < 1 || limit > 200 {
 		limit = 50
+	}
+	if err := h.msgService.CanUserAccessConversation(c.Request.Context(), userID, conversationID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrConversationAccessDenied):
+			apiresponse.Forbidden(c, err.Error())
+		case errors.Is(err, service.ErrInvalidMessageRoute):
+			apiresponse.BadRequest(c, err.Error())
+		default:
+			apiresponse.InternalError(c, err.Error())
+		}
+		return
 	}
 
 	messages, err := h.msgService.GetMessages(c.Request.Context(), conversationID, limit, beforeSeq)
@@ -113,7 +146,14 @@ func (h *MessageHandler) SendMessage(c *gin.Context) {
 
 	message, err := h.msgService.SendMessage(c.Request.Context(), userID, req)
 	if err != nil {
-		apiresponse.BadRequest(c, err.Error())
+		switch {
+		case errors.Is(err, service.ErrMessageSenderForbidden),
+			errors.Is(err, service.ErrMessageTargetForbidden),
+			errors.Is(err, service.ErrConversationAccessDenied):
+			apiresponse.Forbidden(c, err.Error())
+		default:
+			apiresponse.BadRequest(c, err.Error())
+		}
 		return
 	}
 

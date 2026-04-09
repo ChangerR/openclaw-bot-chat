@@ -17,6 +17,10 @@ func NewMessageRepository(db *gorm.DB) *MessageRepository {
 	return &MessageRepository{db: db}
 }
 
+func (r *MessageRepository) withDB(db *gorm.DB) *MessageRepository {
+	return &MessageRepository{db: db}
+}
+
 func (r *MessageRepository) Create(ctx context.Context, msg *model.Message) error {
 	return r.db.WithContext(ctx).Create(msg).Error
 }
@@ -59,9 +63,43 @@ func (r *MessageRepository) CountByConversationID(ctx context.Context, conversat
 }
 
 func (r *MessageRepository) GetNextSeq(ctx context.Context, conversationID string) (int64, error) {
-	var maxSeq int64
-	err := r.db.WithContext(ctx).Model(&model.Message{}).Where("conversation_id = ?", conversationID).Select("COALESCE(MAX(seq), 0)").Scan(&maxSeq).Error
-	return maxSeq + 1, err
+	var current struct {
+		Seq int64
+	}
+	result := r.db.WithContext(ctx).
+		Raw("SELECT seq FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1 FOR UPDATE", conversationID).
+		Scan(&current)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return 1, nil
+	}
+	return current.Seq + 1, nil
+}
+
+func (r *MessageRepository) CreateWithNextSeq(ctx context.Context, msg *model.Message) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		scoped := r.withDB(tx)
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", msg.ConversationID).Error; err != nil {
+			return err
+		}
+
+		exists, err := scoped.ExistsByConversationAndMessageID(ctx, msg.ConversationID, msg.MessageID)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+
+		seq, err := scoped.GetNextSeq(ctx, msg.ConversationID)
+		if err != nil {
+			return err
+		}
+		msg.Seq = seq
+		return scoped.Create(ctx, msg)
+	})
 }
 
 func (r *MessageRepository) GetConversations(ctx context.Context, userID uuid.UUID, botID *uuid.UUID, limit int) ([]string, error) {

@@ -1,0 +1,2 @@
+topic read $SYS/#
+topic readwrite chat/#

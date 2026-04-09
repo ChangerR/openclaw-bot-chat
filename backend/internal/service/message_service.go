@@ -17,13 +17,25 @@ import (
 // MessageService handles message operations
 type MessageService struct {
 	msgRepo    *repository.MessageRepository
+	botRepo    *repository.BotRepository
+	groupRepo  *repository.GroupRepository
 	auditRepo  *repository.AuditLogRepository
 	mqttClient *mqtt.Client
 }
 
 // NewMessageService creates a new message service
-func NewMessageService(msgRepo *repository.MessageRepository, auditRepo *repository.AuditLogRepository) *MessageService {
-	return &MessageService{msgRepo: msgRepo, auditRepo: auditRepo}
+func NewMessageService(
+	msgRepo *repository.MessageRepository,
+	botRepo *repository.BotRepository,
+	groupRepo *repository.GroupRepository,
+	auditRepo *repository.AuditLogRepository,
+) *MessageService {
+	return &MessageService{
+		msgRepo:   msgRepo,
+		botRepo:   botRepo,
+		groupRepo: groupRepo,
+		auditRepo: auditRepo,
+	}
 }
 
 func (s *MessageService) SetMQTTClient(client *mqtt.Client) {
@@ -54,20 +66,7 @@ func (s *MessageService) HandleIncomingMessage(topic string, payload []byte) err
 
 // SaveMessage saves an incoming MQTT message to the database
 func (s *MessageService) SaveMessage(ctx context.Context, msg *model.Message) error {
-	exists, err := s.msgRepo.ExistsByConversationAndMessageID(ctx, msg.ConversationID, msg.MessageID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
-
-	seq, err := s.msgRepo.GetNextSeq(ctx, msg.ConversationID)
-	if err != nil {
-		return err
-	}
-	msg.Seq = seq
-	return s.msgRepo.Create(ctx, msg)
+	return s.msgRepo.CreateWithNextSeq(ctx, msg)
 }
 
 // GetMessages returns messages for a conversation
@@ -161,12 +160,18 @@ type SendMessageRequest struct {
 	FromTypeSnake       string                 `json:"from_type"`
 	FromID              string                 `json:"fromId"`
 	FromIDSnake         string                 `json:"from_id"`
+	FromBotID           string                 `json:"fromBotId"`
+	FromBotIDSnake      string                 `json:"from_bot_id"`
 	BotID               string                 `json:"botId"`
 	BotIDSnake          string                 `json:"bot_id"`
 	ToType              string                 `json:"toType"`
 	ToTypeSnake         string                 `json:"to_type"`
 	ToID                string                 `json:"toId"`
 	ToIDSnake           string                 `json:"to_id"`
+	ToBotID             string                 `json:"toBotId"`
+	ToBotIDSnake        string                 `json:"to_bot_id"`
+	ToGroupID           string                 `json:"toGroupId"`
+	ToGroupIDSnake      string                 `json:"to_group_id"`
 	ContentType         string                 `json:"contentType"`
 	ContentTypeSnake    string                 `json:"content_type"`
 	Body                string                 `json:"body"`
@@ -189,51 +194,6 @@ type normalizedMessage struct {
 	timestamp      int64
 	botID          string
 	groupID        string
-}
-
-// BuildConversationID builds a conversation ID from components
-func BuildConversationID(senderType, senderID, recipientType, recipientID string) string {
-	if senderType == "user" && recipientType == "bot" {
-		return "user/" + senderID + "/bot/" + recipientID
-	}
-	if senderType == "bot" && recipientType == "user" {
-		return "user/" + recipientID + "/bot/" + senderID
-	}
-	if senderType == "bot" && recipientType == "bot" {
-		return "bot/" + senderID + "/bot/" + recipientID
-	}
-	return "unknown"
-}
-
-// BuildGroupConversationID builds a group conversation ID
-func BuildGroupConversationID(groupID string) string {
-	return "group/" + groupID
-}
-
-// ParseConversationID parses a conversation ID into its components
-func ParseConversationID(convID string) (senderType, senderID, recipientType, recipientID string) {
-	// Format: user/{uid}/bot/{bid} or group/{gid}
-	if len(convID) > 5 && convID[:5] == "user/" {
-		// user/{uid}/bot/{bid}
-		parts := splitConversationID(convID)
-		if len(parts) >= 4 {
-			return parts[0], parts[1], parts[2], parts[3]
-		}
-	}
-	return "", "", "", ""
-}
-
-func splitConversationID(convID string) []string {
-	var parts []string
-	start := 0
-	for i, c := range convID {
-		if c == '/' {
-			parts = append(parts, convID[start:i])
-			start = i + 1
-		}
-	}
-	parts = append(parts, convID[start:])
-	return parts
 }
 
 // NewMQTTMessage creates a Message model from an MQTT payload.
@@ -278,6 +238,9 @@ func NewMQTTMessage(topic string, payload MessagePayload) (*model.Message, error
 func (s *MessageService) SendMessage(ctx context.Context, userID uuid.UUID, req SendMessageRequest) (*model.Message, error) {
 	normalized, err := req.normalize(userID)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeUserSendNormalized(ctx, userID, normalized); err != nil {
 		return nil, err
 	}
 
@@ -424,7 +387,15 @@ func (r SendMessageRequest) normalize(userID uuid.UUID) (normalizedMessage, erro
 	route := parseMessageRoute(conversationID)
 
 	senderType := firstNonEmpty(r.FromType, r.FromTypeSnake, route.fromType)
-	senderID := firstNonEmpty(r.FromID, r.FromIDSnake, r.BotID, r.BotIDSnake, route.fromID)
+	senderID := firstNonEmpty(
+		r.FromID,
+		r.FromIDSnake,
+		r.FromBotID,
+		r.FromBotIDSnake,
+		r.BotID,
+		r.BotIDSnake,
+		route.fromID,
+	)
 	senderName := ""
 	if r.From != nil {
 		senderType = firstNonEmpty(r.From.Type, senderType)
@@ -439,7 +410,23 @@ func (r SendMessageRequest) normalize(userID uuid.UUID) (normalizedMessage, erro
 	}
 
 	receiverType := firstNonEmpty(r.ToType, r.ToTypeSnake, route.toType)
-	receiverID := firstNonEmpty(r.ToID, r.ToIDSnake, route.toID)
+	if receiverType == "" {
+		switch {
+		case firstNonEmpty(r.ToGroupID, r.ToGroupIDSnake) != "":
+			receiverType = "group"
+		case firstNonEmpty(r.ToBotID, r.ToBotIDSnake) != "":
+			receiverType = "bot"
+		}
+	}
+	receiverID := firstNonEmpty(
+		r.ToID,
+		r.ToIDSnake,
+		r.ToBotID,
+		r.ToBotIDSnake,
+		r.ToGroupID,
+		r.ToGroupIDSnake,
+		route.toID,
+	)
 	if r.To != nil {
 		receiverType = firstNonEmpty(r.To.Type, receiverType)
 		receiverID = firstNonEmpty(r.To.ID, receiverID)
