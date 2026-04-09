@@ -1,0 +1,267 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/openclaw-bot-chat/backend/internal/config"
+	"github.com/openclaw-bot-chat/backend/internal/handler"
+	"github.com/openclaw-bot-chat/backend/internal/middleware"
+	"github.com/openclaw-bot-chat/backend/internal/model"
+	"github.com/openclaw-bot-chat/backend/internal/mqtt"
+	"github.com/openclaw-bot-chat/backend/internal/repository"
+	"github.com/openclaw-bot-chat/backend/internal/service"
+	"github.com/openclaw-bot-chat/backend/internal/websocket"
+	"github.com/openclaw-bot-chat/backend/pkg/jwt"
+	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+)
+
+func main() {
+	cfg, err := config.Load("config.yaml")
+	if err != nil {
+		fmt.Printf("failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Setup zerolog
+	log := zerolog.New(os.Stdout).With().Timestamp().Logger()
+	if cfg.Log.Format != "json" {
+		log = zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).With().Timestamp().Logger()
+	}
+	logLevel, _ := zerolog.ParseLevel(cfg.Log.Level)
+	log = log.Level(logLevel)
+	log.Info().Str("mode", cfg.App.Mode).Msg("starting server")
+
+	if cfg.App.Mode == "release" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	router := gin.New()
+	router.Use(middleware.Recovery(log))
+	router.Use(middleware.Logger(log))
+	router.Use(middleware.CORS())
+
+	// --- Database ---
+	db, err := setupDatabase(cfg, log)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to setup database")
+	}
+
+	// --- Redis ---
+	rdb := setupRedis(cfg, log)
+	_ = rdb // ready for future use (rate limiting, caching)
+
+	// --- JWT Manager ---
+	jwtManager := jwt.NewManager(jwt.Config{
+		Secret:          cfg.JWT.Secret,
+		AccessTokenTTL:  cfg.JWT.AccessTokenTTL,
+		RefreshTokenTTL: cfg.JWT.RefreshTokenTTL,
+		Issuer:          cfg.JWT.Issuer,
+	})
+
+	// --- Repositories ---
+	userRepo := repository.NewUserRepository(db)
+	botRepo := repository.NewBotRepository(db)
+	keyRepo := repository.NewBotKeyRepository(db)
+	msgRepo := repository.NewMessageRepository(db)
+	groupRepo := repository.NewGroupRepository(db)
+	auditRepo := repository.NewAuditLogRepository(db)
+
+	// --- Services ---
+	authService := service.NewAuthService(userRepo, auditRepo, jwtManager)
+	botService := service.NewBotService(botRepo, keyRepo, auditRepo, cfg.MQTT.TopicPrefix)
+	msgService := service.NewMessageService(msgRepo, auditRepo)
+	groupService := service.NewGroupService(groupRepo, auditRepo, cfg.MQTT.TopicPrefix)
+
+	// --- MQTT Client ---
+	mqttClient := mqtt.NewClient(mqtt.MQTTConfig{
+		Broker:         cfg.MQTT.Broker,
+		ClientID:       cfg.MQTT.ClientID,
+		Username:       cfg.MQTT.Username,
+		Password:       cfg.MQTT.Password,
+		TopicPrefix:    cfg.MQTT.TopicPrefix,
+		QOS:            cfg.MQTT.QOS,
+		AutoReconnect:  cfg.MQTT.AutoReconnect,
+		ReconnectDelay: cfg.MQTT.ReconnectDelay,
+	}, log, msgService)
+
+	if err := mqttClient.Connect(); err != nil {
+		log.Warn().Err(err).Msg("MQTT connection failed, continuing without MQTT")
+	} else {
+		defer mqttClient.Disconnect()
+	}
+
+	// --- WebSocket Hub ---
+	wsHub := websocket.NewHub(mqttClient, websocket.WSConfig{
+		PingInterval:   time.Duration(cfg.WebSocket.PingInterval) * time.Second,
+		PongTimeout:    time.Duration(cfg.WebSocket.PongTimeout) * time.Second,
+		MaxMessageSize: cfg.WebSocket.MaxMessageSize,
+	}, log)
+	go wsHub.Run()
+	defer wsHub.Stop()
+
+	// --- Handlers ---
+	authHandler := handler.NewAuthHandler(authService)
+	botHandler := handler.NewBotHandler(botService)
+	msgHandler := handler.NewMessageHandler(msgService)
+	groupHandler := handler.NewGroupHandler(groupService)
+
+	// --- Routes ---
+	setupRoutes(router, authHandler, botHandler, msgHandler, groupHandler, jwtManager, wsHub, log)
+
+	// --- HTTP Server ---
+	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      router,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		log.Info().Msg("shutting down server...")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Error().Err(err).Msg("server shutdown error")
+		}
+	}()
+
+	log.Info().Str("addr", addr).Msg("server listening")
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal().Err(err).Msg("server error")
+	}
+	log.Info().Msg("server stopped")
+}
+
+func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
+	dsn := cfg.Database.DSN()
+	gormConfig := &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Warn),
+	}
+	db, err := gorm.Open(postgres.Open(dsn), gormConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get underlying db: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.Database.ConnMaxLifetimeDuration())
+
+	log.Info().Msg("database connected")
+
+	// Auto-migrate models
+	if err := db.AutoMigrate(
+		&model.User{},
+		&model.Bot{},
+		&model.BotKey{},
+		&model.Message{},
+		&model.Group{},
+		&model.GroupMember{},
+		&model.BotGroupMember{},
+		&model.AuditLog{},
+	); err != nil {
+		return nil, fmt.Errorf("failed to migrate database: %w", err)
+	}
+	log.Info().Msg("database migrated")
+
+	return db, nil
+}
+
+func setupRedis(cfg *config.Config, log zerolog.Logger) *redis.Client {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     cfg.Redis.Addr(),
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+		PoolSize: cfg.Redis.PoolSize,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Warn().Err(err).Msg("Redis connection failed, continuing without Redis")
+	} else {
+		log.Info().Msg("Redis connected")
+	}
+	return rdb
+}
+
+func setupRoutes(
+	r *gin.Engine,
+	authHandler *handler.AuthHandler,
+	botHandler *handler.BotHandler,
+	msgHandler *handler.MessageHandler,
+	groupHandler *handler.GroupHandler,
+	jwtManager *jwt.Manager,
+	wsHub *websocket.Hub,
+	log zerolog.Logger,
+) {
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	api := r.Group("/api/v1")
+
+	// Public auth routes
+	auth := api.Group("/auth")
+	{
+		auth.POST("/register", authHandler.Register)
+		auth.POST("/login", authHandler.Login)
+		auth.POST("/refresh", authHandler.Refresh)
+	}
+
+	// Protected routes
+	protected := api.Group("")
+	protected.Use(middleware.JWTAuth(jwtManager))
+	{
+		protected.POST("/auth/logout", authHandler.Logout)
+		protected.GET("/auth/me", authHandler.Me)
+
+		// Bots
+		protected.GET("/bots", botHandler.List)
+		protected.POST("/bots", botHandler.Create)
+		protected.GET("/bots/:id", botHandler.Get)
+		protected.PUT("/bots/:id", botHandler.Update)
+		protected.DELETE("/bots/:id", botHandler.Delete)
+
+		// Bot Keys
+		protected.GET("/bots/:id/keys", botHandler.ListKeys)
+		protected.POST("/bots/:id/keys", botHandler.CreateKey)
+		protected.DELETE("/bots/:id/keys/:key_id", botHandler.RevokeKey)
+
+		// Messages
+		protected.GET("/messages", msgHandler.GetMessages)
+		protected.GET("/conversations", msgHandler.GetConversations)
+
+		// Groups
+		protected.GET("/groups", groupHandler.List)
+		protected.POST("/groups", groupHandler.Create)
+		protected.GET("/groups/:id", groupHandler.Get)
+		protected.PUT("/groups/:id", groupHandler.Update)
+		protected.DELETE("/groups/:id", groupHandler.Delete)
+		protected.POST("/groups/:id/members", groupHandler.AddMember)
+		protected.DELETE("/groups/:id/members/:uid", groupHandler.RemoveMember)
+		protected.GET("/groups/:id/members", groupHandler.GetMembers)
+
+		// WebSocket
+		protected.GET("/ws", websocket.HandleWebSocket(jwtManager, wsHub, log))
+	}
+
+	_ = uuid.UUID{} // suppress unused import if needed
+}

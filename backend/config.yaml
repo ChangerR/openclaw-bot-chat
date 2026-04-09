@@ -1,0 +1,51 @@
+# OpenClaw Bot Chat Backend Configuration
+
+app:
+  host: "0.0.0.0"
+  port: 8080
+  mode: debug  # debug, release, test
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  dbname: "openclaw_bot_chat"
+  sslmode: "disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 300  # seconds
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 10
+
+mqtt:
+  broker: "tcp://localhost:1883"
+  client_id: "openclaw-backend"
+  username: ""
+  password: ""
+  topic_prefix: "chat"
+  qos: 1
+  auto_reconnect: true
+  reconnect_delay: 5  # seconds
+
+jwt:
+  secret: "your-super-secret-jwt-key-change-in-production"
+  access_token_ttl: 7200     # 2 hours in seconds
+  refresh_token_ttl: 604800  # 7 days in seconds
+  issuer: "openclaw-bot-chat"
+
+websocket:
+  read_buffer_size: 1024
+  write_buffer_size: 1024
+  ping_interval: 30  # seconds
+  pong_timeout: 60   # seconds
+  max_message_size: 65536  # bytes
+
+log:
+  level: debug  # debug, info, warn, error
+  format: json  # json, console
