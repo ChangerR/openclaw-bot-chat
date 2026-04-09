@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +20,28 @@ type MessageService struct {
 // NewMessageService creates a new message service
 func NewMessageService(msgRepo *repository.MessageRepository, auditRepo *repository.AuditLogRepository) *MessageService {
 	return &MessageService{msgRepo: msgRepo, auditRepo: auditRepo}
+}
+
+// HandleIncomingMessage persists a raw MQTT payload received by the transport layer.
+func (s *MessageService) HandleIncomingMessage(topic string, payload []byte) error {
+	var msgPayload MessagePayload
+	if err := json.Unmarshal(payload, &msgPayload); err != nil {
+		return fmt.Errorf("unmarshal MQTT payload: %w", err)
+	}
+
+	mqttMsg, err := NewMQTTMessage(topic, msgPayload)
+	if err != nil {
+		return fmt.Errorf("build MQTT message model: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := s.SaveMessage(ctx, mqttMsg); err != nil {
+		return fmt.Errorf("save MQTT message: %w", err)
+	}
+
+	return nil
 }
 
 // SaveMessage saves an incoming MQTT message to the database
@@ -136,8 +160,8 @@ func splitConversationID(convID string) []string {
 	return parts
 }
 
-// NewMQTTMessage creates a Message model from an MQTT payload
-func NewMQTTMessage(topic, payloadStr string, payload MessagePayload) (*model.Message, error) {
+// NewMQTTMessage creates a Message model from an MQTT payload.
+func NewMQTTMessage(topic string, payload MessagePayload) (*model.Message, error) {
 	msgID, err := uuid.Parse(payload.MessageID)
 	if err != nil {
 		msgID = uuid.New()

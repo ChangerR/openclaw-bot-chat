@@ -9,7 +9,6 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/google/uuid"
-	"github.com/openclaw-bot-chat/backend/internal/service"
 	"github.com/rs/zerolog"
 )
 
@@ -18,7 +17,7 @@ type Client struct {
 	client      mqtt.Client
 	log         zerolog.Logger
 	cfg         MQTTConfig
-	msgService  *service.MessageService
+	ingress     MessageIngress
 	topicPrefix string
 	subscribers map[string][]MessageHandler
 	subMu       sync.RWMutex
@@ -46,7 +45,7 @@ type MessageHandler func(topic string, payload []byte)
 type MessageCallback func(topic string, payload []byte)
 
 // NewClient creates a new MQTT client
-func NewClient(cfg MQTTConfig, log zerolog.Logger, msgService *service.MessageService) *Client {
+func NewClient(cfg MQTTConfig, log zerolog.Logger, ingress MessageIngress) *Client {
 	if cfg.ClientID == "" {
 		cfg.ClientID = fmt.Sprintf("openclaw-backend-%s", uuid.New().String()[:8])
 	}
@@ -54,7 +53,7 @@ func NewClient(cfg MQTTConfig, log zerolog.Logger, msgService *service.MessageSe
 	return &Client{
 		cfg:         cfg,
 		log:         log,
-		msgService:  msgService,
+		ingress:     ingress,
 		topicPrefix: cfg.TopicPrefix,
 		subscribers: make(map[string][]MessageHandler),
 		ctx:         ctx,
@@ -126,42 +125,14 @@ func (c *Client) handleMessage(client mqtt.Client, msg mqtt.Message) {
 
 	c.log.Debug().Str("topic", topic).Int("len", len(payload)).Msg("MQTT message received")
 
-	// Parse message payload
-	var msgPayload service.MessagePayload
-	if err := json.Unmarshal(payload, &msgPayload); err != nil {
-		c.log.Warn().Err(err).Str("topic", topic).Msg("failed to unmarshal MQTT payload")
-		return
-	}
-
-	// Create message model
-	mqttMsg, err := service.NewMQTTMessage(topic, string(payload), msgPayload)
-	if err != nil {
-		c.log.Warn().Err(err).Str("topic", topic).Msg("failed to create message model")
-		return
-	}
-
-	// Save to database
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := c.msgService.SaveMessage(ctx, mqttMsg); err != nil {
-		c.log.Error().Err(err).Str("topic", topic).Msg("failed to save message")
+	if c.ingress != nil {
+		if err := c.ingress.HandleIncomingMessage(topic, payload); err != nil {
+			c.log.Error().Err(err).Str("topic", topic).Msg("failed to handle incoming MQTT message")
+		}
 	}
 
 	// Route to local subscribers
 	c.deliverToSubscribers(topic, payload)
-
-	// Route based on topic pattern
-	c.routeMessage(topic, payload, msgPayload)
-}
-
-func (c *Client) routeMessage(topic string, payload []byte, msgPayload service.MessagePayload) {
-	// Parse topic: chat/user/{uid}/bot/{bid} or chat/group/{gid}
-	// This method handles routing for bot-to-bot private chats and group broadcasts
-	parts := splitTopic(topic)
-	if len(parts) < 3 {
-		return
-	}
-	c.log.Debug().Interface("parts", parts).Msg("routing message")
 }
 
 func splitTopic(topic string) []string {
@@ -270,6 +241,11 @@ func (c *Client) Disconnect() {
 // IsConnected returns whether the client is connected
 func (c *Client) IsConnected() bool {
 	return c.client != nil && c.client.IsConnected()
+}
+
+// TopicPrefix returns the MQTT topic prefix configured for this client.
+func (c *Client) TopicPrefix() string {
+	return c.topicPrefix
 }
 
 // BuildTopic is a helper to build a full MQTT topic path
