@@ -44,7 +44,10 @@ websocket:
   write_buffer_size: 1024
   ping_interval: 30  # seconds
   pong_timeout: 60   # seconds
+  write_timeout: 10  # seconds
   max_message_size: 65536  # bytes
+  send_queue_size: 256
+  broadcast_queue_size: 256
 
 log:
   level: debug  # debug, info, warn, error

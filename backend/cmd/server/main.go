@@ -103,10 +103,16 @@ func main() {
 
 	// --- WebSocket Hub ---
 	wsHub := websocket.NewHub(mqttClient, websocket.WSConfig{
-		PingInterval:   time.Duration(cfg.WebSocket.PingInterval) * time.Second,
-		PongTimeout:    time.Duration(cfg.WebSocket.PongTimeout) * time.Second,
-		MaxMessageSize: cfg.WebSocket.MaxMessageSize,
+		ReadBufferSize:     cfg.WebSocket.ReadBufferSize,
+		WriteBufferSize:    cfg.WebSocket.WriteBufferSize,
+		PingInterval:       time.Duration(cfg.WebSocket.PingInterval) * time.Second,
+		PongTimeout:        time.Duration(cfg.WebSocket.PongTimeout) * time.Second,
+		WriteTimeout:       time.Duration(cfg.WebSocket.WriteTimeout) * time.Second,
+		MaxMessageSize:     cfg.WebSocket.MaxMessageSize,
+		SendQueueSize:      cfg.WebSocket.SendQueueSize,
+		BroadcastQueueSize: cfg.WebSocket.BroadcastQueueSize,
 	}, log)
+	wsHub.AttachMQTTBridge()
 	go wsHub.Run()
 	defer wsHub.Stop()
 

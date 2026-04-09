@@ -70,11 +70,14 @@ type JWTConfig struct {
 
 // WebSocketConfig holds WebSocket settings
 type WebSocketConfig struct {
-	ReadBufferSize  int
-	WriteBufferSize int
-	PingInterval    int    // seconds
-	PongTimeout     int    // seconds
-	MaxMessageSize  int64  // bytes
+	ReadBufferSize     int
+	WriteBufferSize    int
+	PingInterval       int   // seconds
+	PongTimeout        int   // seconds
+	WriteTimeout       int   // seconds
+	MaxMessageSize     int64 // bytes
+	SendQueueSize      int
+	BroadcastQueueSize int
 }
 
 // LogConfig holds logging settings
@@ -146,8 +149,23 @@ func Load(configPath string) (*Config, error) {
 	if cfg.WebSocket.PongTimeout == 0 {
 		cfg.WebSocket.PongTimeout = 60
 	}
+	if cfg.WebSocket.WriteTimeout == 0 {
+		cfg.WebSocket.WriteTimeout = 10
+	}
 	if cfg.WebSocket.MaxMessageSize == 0 {
 		cfg.WebSocket.MaxMessageSize = 65536
+	}
+	if cfg.WebSocket.ReadBufferSize == 0 {
+		cfg.WebSocket.ReadBufferSize = 1024
+	}
+	if cfg.WebSocket.WriteBufferSize == 0 {
+		cfg.WebSocket.WriteBufferSize = 1024
+	}
+	if cfg.WebSocket.SendQueueSize == 0 {
+		cfg.WebSocket.SendQueueSize = 256
+	}
+	if cfg.WebSocket.BroadcastQueueSize == 0 {
+		cfg.WebSocket.BroadcastQueueSize = 256
 	}
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "debug"
