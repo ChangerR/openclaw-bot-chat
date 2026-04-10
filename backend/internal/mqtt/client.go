@@ -63,6 +63,8 @@ func NewClient(cfg MQTTConfig, log zerolog.Logger, ingress MessageIngress) *Clie
 
 // Connect establishes connection to the MQTT broker
 func (c *Client) Connect() error {
+	const initialConnectTimeout = 5 * time.Second
+
 	opts := mqtt.NewClientOptions().
 		AddBroker(c.cfg.Broker).
 		SetClientID(c.cfg.ClientID).
@@ -84,7 +86,11 @@ func (c *Client) Connect() error {
 	c.client = mqtt.NewClient(opts)
 
 	token := c.client.Connect()
-	if token.Wait() && token.Error() != nil {
+	if !token.WaitTimeout(initialConnectTimeout) {
+		c.client.Disconnect(250)
+		return fmt.Errorf("timed out connecting to MQTT broker after %s", initialConnectTimeout)
+	}
+	if token.Error() != nil {
 		return fmt.Errorf("failed to connect to MQTT broker: %w", token.Error())
 	}
 

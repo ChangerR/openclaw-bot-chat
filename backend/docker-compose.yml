@@ -43,12 +43,14 @@ services:
       - -c
       - |
         mosquitto_passwd -b -c /mosquitto/config/passwd "$$MQTT_USERNAME" "$$MQTT_PASSWORD"
+        chown mosquitto:mosquitto /mosquitto/config/passwd
+        chmod 600 /mosquitto/config/passwd
         exec mosquitto -c /mosquitto/config/mosquitto.conf
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
       - ./mosquitto.acl:/mosquitto/config/aclfile
     healthcheck:
-      test: ["CMD", "mosquitto_sub", "-u", "$$MQTT_USERNAME", "-P", "$$MQTT_PASSWORD", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      test: ["CMD-SHELL", "mosquitto_pub -u \"$${MQTT_USERNAME}\" -P \"$${MQTT_PASSWORD}\" -t healthcheck/ping -m ok -q 0"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -73,6 +75,26 @@ services:
       - MQTT_BROKER=tcp://mosquitto:1883
       - MQTT_USERNAME=openclaw_backend
       - MQTT_PASSWORD=change-me-in-production
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health | grep -q '\"status\":\"ok\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+        VITE_MQTT_BROKER_URL: ""
+    ports:
+      - "4173:4173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - TZ=Asia/Shanghai
 
 volumes:
   postgres_data:

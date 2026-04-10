@@ -105,9 +105,8 @@ func (r *MessageRepository) CreateWithNextSeq(ctx context.Context, msg *model.Me
 func (r *MessageRepository) GetConversations(ctx context.Context, userID uuid.UUID, botID *uuid.UUID, limit int) ([]string, error) {
 	var conversationIDs []string
 	query := r.db.WithContext(ctx).Model(&model.Message{}).
-		Distinct("conversation_id").
-		Where("is_deleted = false").
-		Order("MAX(created_at) DESC")
+		Select("conversation_id").
+		Where("is_deleted = false")
 
 	if botID != nil {
 		query = query.Where("(sender_id = ? OR bot_id = ?)", userID, *botID)
@@ -115,7 +114,11 @@ func (r *MessageRepository) GetConversations(ctx context.Context, userID uuid.UU
 		query = query.Where("sender_id = ? OR bot_id IN (SELECT id FROM bots WHERE owner_id = ?)", userID, userID)
 	}
 
-	err := query.Limit(limit).Pluck("conversation_id", &conversationIDs).Error
+	err := query.
+		Group("conversation_id").
+		Order("MAX(created_at) DESC").
+		Limit(limit).
+		Pluck("conversation_id", &conversationIDs).Error
 	return conversationIDs, err
 }
 

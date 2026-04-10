@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -332,6 +333,9 @@ func HandleWebSocket(jwtManager *jwt.Manager, hub *Hub, log zerolog.Logger) gin.
 				tokenStr = auth[7:]
 			}
 		}
+		if tokenStr == "" {
+			tokenStr = tokenFromSubprotocolHeader(c.GetHeader("Sec-WebSocket-Protocol"))
+		}
 
 		if tokenStr == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing token or X-Bot-Key"})
@@ -356,4 +360,27 @@ func HandleWebSocket(jwtManager *jwt.Manager, hub *Hub, log zerolog.Logger) gin.
 		go client.WritePump()
 		go client.ReadPump()
 	}
+}
+
+func tokenFromSubprotocolHeader(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+
+	parts := strings.Split(raw, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+
+	for i, part := range parts {
+		lower := strings.ToLower(part)
+		if lower == "authorization" && i+1 < len(parts) {
+			return strings.TrimSpace(strings.TrimPrefix(parts[i+1], "Bearer "))
+		}
+		if strings.HasPrefix(lower, "bearer ") {
+			return strings.TrimSpace(part[7:])
+		}
+	}
+
+	return ""
 }
