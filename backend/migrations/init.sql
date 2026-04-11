@@ -101,6 +101,35 @@ CREATE INDEX idx_messages_created_at ON messages(created_at);
 CREATE INDEX idx_messages_seq ON messages(conversation_id, seq DESC);
 
 -- ============================================================
+-- Table: assets
+-- ============================================================
+CREATE TABLE IF NOT EXISTS assets (
+    id               UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+    kind             VARCHAR(32)  NOT NULL,
+    storage_provider VARCHAR(32)  NOT NULL,
+    bucket           VARCHAR(255) NOT NULL,
+    object_key       VARCHAR(1024) NOT NULL UNIQUE,
+    mime_type        VARCHAR(255) NOT NULL,
+    size             BIGINT       NOT NULL DEFAULT 0,
+    file_name        VARCHAR(512) NOT NULL,
+    width            INTEGER,
+    height           INTEGER,
+    sha256           VARCHAR(128),
+    status           VARCHAR(32)  NOT NULL DEFAULT 'pending',
+    owner_user_id    UUID,
+    owner_bot_id     UUID,
+    source_url       TEXT,
+    metadata         JSONB,
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    deleted_at       TIMESTAMPTZ
+);
+
+CREATE INDEX idx_assets_owner_user_id ON assets(owner_user_id);
+CREATE INDEX idx_assets_owner_bot_id ON assets(owner_bot_id);
+CREATE INDEX idx_assets_status ON assets(status);
+
+-- ============================================================
 -- Table: groups
 -- ============================================================
 CREATE TABLE IF NOT EXISTS groups (
@@ -196,6 +225,9 @@ CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_bots_updated_at BEFORE UPDATE ON bots
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_assets_updated_at BEFORE UPDATE ON assets
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_groups_updated_at BEFORE UPDATE ON groups

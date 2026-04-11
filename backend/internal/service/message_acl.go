@@ -34,7 +34,7 @@ func (s *MessageService) CanUserAccessConversation(ctx context.Context, userID u
 			return ErrConversationAccessDenied
 		}
 		return nil
-	case route.fromType == "" || route.toType == "":
+	case !route.isDirect():
 		return ErrInvalidMessageRoute
 	default:
 		allowed, err := s.userMatchesDirectRoute(ctx, userID, route)
@@ -45,6 +45,32 @@ func (s *MessageService) CanUserAccessConversation(ctx context.Context, userID u
 			return ErrConversationAccessDenied
 		}
 		return nil
+	}
+}
+
+func (s *MessageService) CanBotAccessConversation(ctx context.Context, botID uuid.UUID, conversationID string) error {
+	route := parseMessageRoute(conversationID)
+
+	switch {
+	case route.groupID != "":
+		groupID, ok := parseUUIDValue(route.groupID)
+		if !ok {
+			return ErrInvalidMessageRoute
+		}
+		allowed, err := s.isBotGroupMember(ctx, groupID, botID)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrConversationAccessDenied
+		}
+		return nil
+	case !route.isDirect():
+		return ErrInvalidMessageRoute
+	case route.hasParticipant("bot", botID.String()):
+		return nil
+	default:
+		return ErrConversationAccessDenied
 	}
 }
 
@@ -63,7 +89,10 @@ func (s *MessageService) CanUserPublishTopic(ctx context.Context, userID uuid.UU
 	if err != nil {
 		return err
 	}
-	return s.authorizeUserSendNormalized(ctx, userID, normalized)
+	if err := s.authorizeUserSendNormalized(ctx, userID, normalized); err != nil {
+		return err
+	}
+	return s.prepareNormalizedMessage(ctx, &normalized)
 }
 
 func (s *MessageService) CanBotSubscribeTopic(ctx context.Context, botID uuid.UUID, topic string) error {
@@ -83,11 +112,9 @@ func (s *MessageService) CanBotSubscribeTopic(ctx context.Context, botID uuid.UU
 			return ErrTopicAccessDenied
 		}
 		return nil
-	case route.fromType == "" || route.toType == "":
+	case !route.isDirect():
 		return ErrInvalidMessageRoute
-	case route.fromType == "bot" && route.fromID == botID.String():
-		return nil
-	case route.toType == "bot" && route.toID == botID.String():
+	case route.hasParticipant("bot", botID.String()):
 		return nil
 	default:
 		return ErrTopicAccessDenied
@@ -99,7 +126,10 @@ func (s *MessageService) CanBotPublishTopic(ctx context.Context, botID uuid.UUID
 	if err != nil {
 		return err
 	}
-	return s.authorizeBotSendNormalized(ctx, botID, normalized)
+	if err := s.authorizeBotSendNormalized(ctx, botID, normalized); err != nil {
+		return err
+	}
+	return s.prepareNormalizedMessage(ctx, &normalized)
 }
 
 func (s *MessageService) authorizeUserSendNormalized(ctx context.Context, userID uuid.UUID, normalized normalizedMessage) error {
@@ -227,10 +257,7 @@ func (s *MessageService) authorizeBotSendNormalized(ctx context.Context, botID u
 }
 
 func (s *MessageService) userMatchesDirectRoute(ctx context.Context, userID uuid.UUID, route messageRoute) (bool, error) {
-	if route.fromType == "user" && route.fromID == userID.String() {
-		return true, nil
-	}
-	if route.toType == "user" && route.toID == userID.String() {
+	if route.hasParticipant("user", userID.String()) {
 		return true, nil
 	}
 
@@ -238,8 +265,8 @@ func (s *MessageService) userMatchesDirectRoute(ctx context.Context, userID uuid
 		kind string
 		id   string
 	}{
-		{kind: route.fromType, id: route.fromID},
-		{kind: route.toType, id: route.toID},
+		{kind: route.leftType, id: route.leftID},
+		{kind: route.rightType, id: route.rightID},
 	} {
 		if candidate.kind != "bot" {
 			continue
@@ -330,12 +357,14 @@ func validateNormalizedMessage(normalized normalizedMessage) error {
 		if normalized.receiverType != "group" || normalized.receiverID != route.groupID {
 			return ErrInvalidMessageRoute
 		}
-	case route.fromType == "" || route.toType == "":
+	case !route.isDirect():
 		return ErrInvalidMessageRoute
-	case route.fromType != normalized.senderType ||
-		route.fromID != normalized.senderID ||
-		route.toType != normalized.receiverType ||
-		route.toID != normalized.receiverID:
+	case !route.matchesDirectedPair(
+		normalized.senderType,
+		normalized.senderID,
+		normalized.receiverType,
+		normalized.receiverID,
+	):
 		return ErrInvalidMessageRoute
 	}
 

@@ -48,6 +48,16 @@ func (r *MessageRepository) GetByConversationID(ctx context.Context, conversatio
 	return msgs, err
 }
 
+func (r *MessageRepository) GetByConversationIDAfterSeq(ctx context.Context, conversationID string, limit int, afterSeq int64) ([]model.Message, error) {
+	var msgs []model.Message
+	query := r.db.WithContext(ctx).Where("conversation_id = ? AND is_deleted = false", conversationID)
+	if afterSeq > 0 {
+		query = query.Where("seq > ?", afterSeq)
+	}
+	err := query.Order("seq ASC").Limit(limit).Find(&msgs).Error
+	return msgs, err
+}
+
 func (r *MessageRepository) ExistsByConversationAndMessageID(ctx context.Context, conversationID string, messageID uuid.UUID) (bool, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&model.Message{}).
@@ -115,6 +125,29 @@ func (r *MessageRepository) GetConversations(ctx context.Context, userID uuid.UU
 	}
 
 	err := query.
+		Group("conversation_id").
+		Order("MAX(created_at) DESC").
+		Limit(limit).
+		Pluck("conversation_id", &conversationIDs).Error
+	return conversationIDs, err
+}
+
+func (r *MessageRepository) GetConversationsForBot(ctx context.Context, botID uuid.UUID, limit int) ([]string, error) {
+	var conversationIDs []string
+	err := r.db.WithContext(ctx).Model(&model.Message{}).
+		Select("conversation_id").
+		Where(
+			`is_deleted = false AND (
+				bot_id = ? OR
+				group_id IN (
+					SELECT group_id
+					FROM bot_group_members
+					WHERE bot_id = ? AND is_active = true
+				)
+			)`,
+			botID,
+			botID,
+		).
 		Group("conversation_id").
 		Order("MAX(created_at) DESC").
 		Limit(limit).

@@ -9,11 +9,38 @@ interface MessageBubbleProps {
   message: Message
   isOwn: boolean
   showSenderName?: boolean
+  mentions?: string[]
 }
 
-export function MessageBubble({ message, isOwn, showSenderName }: MessageBubbleProps) {
+export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }: MessageBubbleProps) {
   const isBot = message.sender_type === 'bot'
   const isSystem = message.sender_type === 'system'
+  const asset = readAsset(message.content.meta)
+  const imageURL = message.content.url || asset?.download_url || asset?.external_url || asset?.source_url
+  const imageName = message.content.name || asset?.file_name || 'Image'
+
+  const processContent = (text: string) => {
+    if (!mentions.length) {
+      // Fallback: match basic @mentions without spaces
+      return text.replace(/(```[\s\S]*?```|`[^`]+`)|(@[a-zA-Z0-9_\-\u4e00-\u9fa5]+)/g, (match, code, mention) => {
+        if (code) return code;
+        return `[${mention}](mention://${encodeURIComponent(mention.slice(1))})`;
+      });
+    }
+
+    // Match exact bot names or fallback to single words
+    const escapedMentions = mentions
+      .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .sort((a, b) => b.length - a.length)
+      .join('|');
+      
+    const regex = new RegExp(`(\`\`\`[\\s\\S]*?\`\`\`|\`[^\`]+\`)|(@(?:${escapedMentions})|@[a-zA-Z0-9_\\-\\u4e00-\\u9fa5]+)`, 'g');
+    
+    return text.replace(regex, (match, code, mention) => {
+      if (code) return code;
+      return `[${mention}](mention://${encodeURIComponent(mention.slice(1))})`;
+    });
+  }
 
   if (isSystem) {
     return (
@@ -55,14 +82,27 @@ export function MessageBubble({ message, isOwn, showSenderName }: MessageBubbleP
           >
             {message.content.type === 'text' && (
               <div className={`prose prose-sm max-w-none ${isOwn ? 'prose-invert' : 'prose-slate'}`}>
-                <Markdown content={message.content.body || ''} />
+                <Markdown content={processContent(message.content.body || '')} isOwn={isOwn} />
               </div>
             )}
             
             {message.content.type === 'image' && (
-              <div className="rounded-lg overflow-hidden max-w-xs">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={message.content.url} alt="Sent image" className="w-full h-auto object-cover" />
+              <div className="space-y-2">
+                {imageURL ? (
+                  <div className="rounded-lg overflow-hidden max-w-xs">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={imageURL} alt={imageName} className="w-full h-auto object-cover" />
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-sm text-slate-400">
+                    Image unavailable
+                  </div>
+                )}
+                {message.content.body && message.content.body !== imageName && (
+                  <p className={`text-sm whitespace-pre-wrap break-words ${isOwn ? 'text-white/90' : 'text-slate-700'}`}>
+                    {message.content.body}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -76,4 +116,17 @@ export function MessageBubble({ message, isOwn, showSenderName }: MessageBubbleP
       </div>
     </div>
   )
+}
+
+function readAsset(meta?: Record<string, unknown>) {
+  if (!meta?.asset || typeof meta.asset !== 'object' || Array.isArray(meta.asset)) {
+    return undefined
+  }
+
+  return meta.asset as {
+    file_name?: string
+    download_url?: string
+    external_url?: string
+    source_url?: string
+  }
 }

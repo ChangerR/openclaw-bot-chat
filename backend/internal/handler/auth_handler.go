@@ -67,7 +67,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	userAgent := c.GetHeader("User-Agent")
 	tokens, user, err := h.authService.Login(c.Request.Context(), req, ip, userAgent)
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidCredentials) {
+		if errors.Is(err, service.ErrMissingLoginIdentifier) {
+			apiresponse.BadRequest(c, "username or email is required")
+		} else if errors.Is(err, service.ErrInvalidCredentials) {
 			apiresponse.Unauthorized(c, "invalid username or password")
 		} else {
 			apiresponse.InternalError(c, "failed to login: "+err.Error())

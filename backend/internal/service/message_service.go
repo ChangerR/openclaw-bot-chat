@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
@@ -19,7 +22,9 @@ type MessageService struct {
 	msgRepo    *repository.MessageRepository
 	botRepo    *repository.BotRepository
 	groupRepo  *repository.GroupRepository
+	assetRepo  *repository.AssetRepository
 	auditRepo  *repository.AuditLogRepository
+	assetSvc   *AssetService
 	mqttClient *mqtt.Client
 }
 
@@ -28,13 +33,17 @@ func NewMessageService(
 	msgRepo *repository.MessageRepository,
 	botRepo *repository.BotRepository,
 	groupRepo *repository.GroupRepository,
+	assetRepo *repository.AssetRepository,
 	auditRepo *repository.AuditLogRepository,
+	assetSvc *AssetService,
 ) *MessageService {
 	return &MessageService{
 		msgRepo:   msgRepo,
 		botRepo:   botRepo,
 		groupRepo: groupRepo,
+		assetRepo: assetRepo,
 		auditRepo: auditRepo,
+		assetSvc:  assetSvc,
 	}
 }
 
@@ -49,14 +58,18 @@ func (s *MessageService) HandleIncomingMessage(topic string, payload []byte) err
 		return fmt.Errorf("unmarshal MQTT payload: %w", err)
 	}
 
-	mqttMsg, err := NewMQTTMessage(topic, msgPayload)
-	if err != nil {
-		return fmt.Errorf("build MQTT message model: %w", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	normalized := normalizeIncomingMessage(topic, msgPayload)
+	if err := s.enrichNormalizedMessage(ctx, &normalized); err != nil {
+		return fmt.Errorf("enrich MQTT message: %w", err)
+	}
+	if err := s.prepareNormalizedMessage(ctx, &normalized); err != nil {
+		return fmt.Errorf("prepare MQTT message: %w", err)
+	}
+
+	mqttMsg := buildMessageModel(normalized)
 	if err := s.SaveMessage(ctx, mqttMsg); err != nil {
 		return fmt.Errorf("save MQTT message: %w", err)
 	}
@@ -77,7 +90,25 @@ func (s *MessageService) GetMessages(ctx context.Context, conversationID string,
 	if limit > 200 {
 		limit = 200
 	}
-	return s.msgRepo.GetByConversationID(ctx, conversationID, limit, beforeSeq)
+	messages, err := s.msgRepo.GetByConversationID(ctx, conversationID, limit, beforeSeq)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateMessages(ctx, messages), nil
+}
+
+func (s *MessageService) GetMessagesAfterSeq(ctx context.Context, conversationID string, limit int, afterSeq int64) ([]model.Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	messages, err := s.msgRepo.GetByConversationIDAfterSeq(ctx, conversationID, limit, afterSeq)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateMessages(ctx, messages), nil
 }
 
 // GetConversations returns a list of conversation IDs for a user
@@ -86,6 +117,16 @@ func (s *MessageService) GetConversations(ctx context.Context, userID uuid.UUID,
 		limit = 50
 	}
 	return s.msgRepo.GetConversations(ctx, userID, nil, limit)
+}
+
+func (s *MessageService) GetConversationsForBot(ctx context.Context, botID uuid.UUID, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	return s.msgRepo.GetConversationsForBot(ctx, botID, limit)
 }
 
 // ConversationInfo holds summary info for a conversation
@@ -109,7 +150,7 @@ func (s *MessageService) GetConversationList(ctx context.Context, userID uuid.UU
 		}
 		result = append(result, ConversationInfo{
 			ConversationID: id,
-			LastMessage:    &msgs[0],
+			LastMessage:    s.hydrateMessage(ctx, &msgs[0]),
 			UnreadCount:    0,
 		})
 	}
@@ -153,6 +194,7 @@ type SendMessageRequest struct {
 	ID                  string                 `json:"id"`
 	ConversationID      string                 `json:"conversationId"`
 	ConversationIDSnake string                 `json:"conversation_id"`
+	Topic               string                 `json:"topic"`
 	From                *MessagePeerPayload    `json:"from,omitempty"`
 	To                  *MessagePeerPayload    `json:"to,omitempty"`
 	ContentRaw          json.RawMessage        `json:"content,omitempty"`
@@ -196,43 +238,13 @@ type normalizedMessage struct {
 	groupID        string
 }
 
+const mentionedBotIDsMetaKey = "mentioned_bot_ids"
+
 // NewMQTTMessage creates a Message model from an MQTT payload.
 func NewMQTTMessage(topic string, payload MessagePayload) (*model.Message, error) {
 	normalized := normalizeIncomingMessage(topic, payload)
-	msgID, err := uuid.Parse(normalized.messageID)
-	if err != nil {
-		msgID = uuid.New()
-	}
-	senderID := parseOptionalUUID(normalized.senderID)
-	botID := parseOptionalUUID(normalized.botID)
-	groupID := parseOptionalUUID(normalized.groupID)
-	senderName := strPtrOrNil(normalized.senderName)
-	metadata := model.JSONMap(normalized.meta)
-	if metadata == nil {
-		metadata = make(model.JSONMap)
-	}
-	var ts time.Time
-	if normalized.timestamp > 0 {
-		ts = time.Unix(normalized.timestamp, 0)
-	} else {
-		ts = time.Now()
-	}
-	return &model.Message{
-		ConversationID: topic,
-		MessageID:      msgID,
-		SenderType:     model.SenderType(normalized.senderType),
-		SenderID:       senderID,
-		SenderName:     senderName,
-		BotID:          botID,
-		GroupID:        groupID,
-		MsgType:        model.MsgType(normalized.contentType),
-		Content:        normalized.body,
-		Metadata:       metadata,
-		MQTTTopic:      topic,
-		QOS:            1,
-		Seq:            0,
-		CreatedAt:      ts,
-	}, nil
+	normalized.conversationID = topic
+	return buildMessageModel(normalized), nil
 }
 
 func (s *MessageService) SendMessage(ctx context.Context, userID uuid.UUID, req SendMessageRequest) (*model.Message, error) {
@@ -243,35 +255,14 @@ func (s *MessageService) SendMessage(ctx context.Context, userID uuid.UUID, req 
 	if err := s.authorizeUserSendNormalized(ctx, userID, normalized); err != nil {
 		return nil, err
 	}
-
-	msgID, err := uuid.Parse(normalized.messageID)
-	if err != nil {
-		msgID = uuid.New()
+	if err := s.enrichNormalizedMessage(ctx, &normalized); err != nil {
+		return nil, err
+	}
+	if err := s.prepareNormalizedMessage(ctx, &normalized); err != nil {
+		return nil, err
 	}
 
-	ts := time.Now()
-	if normalized.timestamp > 0 {
-		ts = time.Unix(normalized.timestamp, 0)
-	}
-
-	message := &model.Message{
-		ConversationID: normalized.conversationID,
-		MessageID:      msgID,
-		SenderType:     model.SenderType(normalized.senderType),
-		SenderID:       parseOptionalUUID(normalized.senderID),
-		SenderName:     strPtrOrNil(normalized.senderName),
-		BotID:          parseOptionalUUID(normalized.botID),
-		GroupID:        parseOptionalUUID(normalized.groupID),
-		MsgType:        model.MsgType(normalized.contentType),
-		Content:        normalized.body,
-		Metadata:       model.JSONMap(normalized.meta),
-		MQTTTopic:      normalized.conversationID,
-		QOS:            1,
-		CreatedAt:      ts,
-	}
-	if message.Metadata == nil {
-		message.Metadata = make(model.JSONMap)
-	}
+	message := buildMessageModel(normalized)
 
 	if err := s.SaveMessage(ctx, message); err != nil {
 		return nil, err
@@ -289,7 +280,46 @@ func (s *MessageService) SendMessage(ctx context.Context, userID uuid.UUID, req 
 		_ = s.mqttClient.Publish(normalized.conversationID, buildRealtimePayload(message), 1)
 	}
 
-	return message, nil
+	return s.hydrateMessage(ctx, message), nil
+}
+
+func (s *MessageService) SendBotMessage(ctx context.Context, botID uuid.UUID, req SendMessageRequest) (*model.Message, error) {
+	normalized, err := req.normalizeForBot(botID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeBotSendNormalized(ctx, botID, normalized); err != nil {
+		return nil, err
+	}
+	if err := s.enrichNormalizedMessage(ctx, &normalized); err != nil {
+		return nil, err
+	}
+	if err := s.prepareNormalizedMessage(ctx, &normalized); err != nil {
+		return nil, err
+	}
+
+	message := buildMessageModel(normalized)
+
+	if err := s.SaveMessage(ctx, message); err != nil {
+		return nil, err
+	}
+
+	s.auditRepo.CreateAsync(&model.AuditLog{
+		BotID:        &botID,
+		GroupID:      message.GroupID,
+		Action:       string(model.AuditActionSendMessage),
+		ResponseCode: intPtr(200),
+	})
+
+	if s.mqttClient != nil && s.mqttClient.IsConnected() {
+		_ = s.mqttClient.Publish(normalized.conversationID, buildRealtimePayload(message), 1)
+	}
+
+	return s.hydrateMessage(ctx, message), nil
+}
+
+func (s *MessageService) ListGroupsForBot(ctx context.Context, botID uuid.UUID) ([]model.Group, error) {
+	return s.groupRepo.ListByBot(ctx, botID)
 }
 
 func NormalizeConversationReference(raw string) string {
@@ -310,11 +340,11 @@ func NormalizeConversationReference(raw string) string {
 	if len(parts) == 3 {
 		switch parts[0] {
 		case "bot":
-			return fmt.Sprintf("chat/bot/%s/to/bot/%s", parts[1], parts[2])
+			return buildRealtimeConversationID("bot", parts[1], "bot", parts[2])
 		case "group":
 			return fmt.Sprintf("chat/group/%s", parts[2])
 		case "user":
-			return fmt.Sprintf("chat/user/%s/to/user/%s", parts[1], parts[2])
+			return buildRealtimeConversationID("user", parts[1], "user", parts[2])
 		}
 	}
 
@@ -326,11 +356,11 @@ func normalizeIncomingMessage(topic string, payload MessagePayload) normalizedMe
 	normalized := normalizedMessage{
 		messageID:      firstNonEmpty(payload.ID, payload.MessageID),
 		conversationID: topic,
-		senderType:     firstNonEmpty(payload.SenderType, route.fromType),
-		senderID:       firstNonEmpty(payload.SenderID, route.fromID),
+		senderType:     payload.SenderType,
+		senderID:       payload.SenderID,
 		senderName:     payload.SenderName,
-		receiverType:   route.toType,
-		receiverID:     route.toID,
+		receiverType:   "",
+		receiverID:     "",
 		contentType:    firstNonEmpty(payload.MsgType, "text"),
 		body:           payload.Body,
 		meta:           firstNonEmptyMap(payload.Meta, payload.Metadata),
@@ -348,6 +378,12 @@ func normalizeIncomingMessage(topic string, payload MessagePayload) normalizedMe
 		normalized.receiverType = firstNonEmpty(payload.To.Type, normalized.receiverType)
 		normalized.receiverID = firstNonEmpty(payload.To.ID, normalized.receiverID)
 	}
+	if normalized.receiverType == "" || normalized.receiverID == "" {
+		if counterpartType, counterpartID, ok := route.counterparty(normalized.senderType, normalized.senderID); ok {
+			normalized.receiverType = counterpartType
+			normalized.receiverID = counterpartID
+		}
+	}
 	contentPayload, legacyText := decodeContentPayload(payload.ContentRaw)
 	if contentPayload != nil {
 		normalized.contentType = firstNonEmpty(contentPayload.Type, normalized.contentType)
@@ -357,6 +393,7 @@ func normalizeIncomingMessage(topic string, payload MessagePayload) normalizedMe
 	if normalized.body == "" {
 		normalized.body = legacyText
 	}
+	normalized.body = normalizeMessageBody(normalized.contentType, normalized.body, normalized.meta)
 
 	if normalized.messageID == "" {
 		normalized.messageID = uuid.New().String()
@@ -386,7 +423,7 @@ func (r SendMessageRequest) normalize(userID uuid.UUID) (normalizedMessage, erro
 	conversationID := NormalizeConversationReference(firstNonEmpty(r.ConversationID, r.ConversationIDSnake))
 	route := parseMessageRoute(conversationID)
 
-	senderType := firstNonEmpty(r.FromType, r.FromTypeSnake, route.fromType)
+	senderType := firstNonEmpty(r.FromType, r.FromTypeSnake)
 	senderID := firstNonEmpty(
 		r.FromID,
 		r.FromIDSnake,
@@ -394,7 +431,6 @@ func (r SendMessageRequest) normalize(userID uuid.UUID) (normalizedMessage, erro
 		r.FromBotIDSnake,
 		r.BotID,
 		r.BotIDSnake,
-		route.fromID,
 	)
 	senderName := ""
 	if r.From != nil {
@@ -409,13 +445,15 @@ func (r SendMessageRequest) normalize(userID uuid.UUID) (normalizedMessage, erro
 		senderID = userID.String()
 	}
 
-	receiverType := firstNonEmpty(r.ToType, r.ToTypeSnake, route.toType)
+	receiverType := firstNonEmpty(r.ToType, r.ToTypeSnake)
 	if receiverType == "" {
 		switch {
 		case firstNonEmpty(r.ToGroupID, r.ToGroupIDSnake) != "":
 			receiverType = "group"
 		case firstNonEmpty(r.ToBotID, r.ToBotIDSnake) != "":
 			receiverType = "bot"
+		case route.isDirect():
+			receiverType, _, _ = route.counterparty(senderType, senderID)
 		}
 	}
 	receiverID := firstNonEmpty(
@@ -425,11 +463,13 @@ func (r SendMessageRequest) normalize(userID uuid.UUID) (normalizedMessage, erro
 		r.ToBotIDSnake,
 		r.ToGroupID,
 		r.ToGroupIDSnake,
-		route.toID,
 	)
 	if r.To != nil {
 		receiverType = firstNonEmpty(r.To.Type, receiverType)
 		receiverID = firstNonEmpty(r.To.ID, receiverID)
+	}
+	if receiverID == "" && route.isDirect() {
+		_, receiverID, _ = route.counterparty(senderType, senderID)
 	}
 	if receiverType == "" || receiverID == "" {
 		return normalizedMessage{}, fmt.Errorf("missing message target")
@@ -447,6 +487,112 @@ func (r SendMessageRequest) normalize(userID uuid.UUID) (normalizedMessage, erro
 	if body == "" {
 		body = legacyText
 	}
+	body = normalizeMessageBody(contentType, body, meta)
+	if contentType == "" {
+		contentType = string(model.MsgTypeText)
+	}
+	if body == "" {
+		return normalizedMessage{}, fmt.Errorf("message body is required")
+	}
+
+	if conversationID == "" {
+		conversationID = buildRealtimeConversationID(senderType, senderID, receiverType, receiverID)
+	}
+
+	normalized := normalizedMessage{
+		messageID:      firstNonEmpty(r.ID, uuid.New().String()),
+		conversationID: conversationID,
+		senderType:     senderType,
+		senderID:       senderID,
+		senderName:     senderName,
+		receiverType:   receiverType,
+		receiverID:     receiverID,
+		contentType:    contentType,
+		body:           body,
+		meta:           meta,
+		timestamp:      r.Timestamp,
+	}
+	if normalized.senderType == string(model.SenderTypeBot) {
+		normalized.botID = normalized.senderID
+	} else if normalized.receiverType == "bot" {
+		normalized.botID = normalized.receiverID
+	}
+	if normalized.receiverType == "group" {
+		normalized.groupID = normalized.receiverID
+	}
+
+	return normalized, nil
+}
+
+func (r SendMessageRequest) normalizeForBot(botID uuid.UUID) (normalizedMessage, error) {
+	conversationID := NormalizeConversationReference(firstNonEmpty(r.Topic, r.ConversationID, r.ConversationIDSnake))
+	route := parseMessageRoute(conversationID)
+
+	senderType := firstNonEmpty(r.FromType, r.FromTypeSnake)
+	senderID := firstNonEmpty(
+		r.FromID,
+		r.FromIDSnake,
+		r.FromBotID,
+		r.FromBotIDSnake,
+		r.BotID,
+		r.BotIDSnake,
+	)
+	senderName := ""
+	if r.From != nil {
+		senderType = firstNonEmpty(r.From.Type, senderType)
+		senderID = firstNonEmpty(r.From.ID, senderID)
+		senderName = firstNonEmpty(r.From.Name, senderName)
+	}
+	if senderType == "" {
+		senderType = string(model.SenderTypeBot)
+	}
+	if senderID == "" {
+		senderID = botID.String()
+	}
+
+	receiverType := firstNonEmpty(r.ToType, r.ToTypeSnake)
+	if receiverType == "" {
+		switch {
+		case firstNonEmpty(r.ToGroupID, r.ToGroupIDSnake) != "":
+			receiverType = "group"
+		case firstNonEmpty(r.ToBotID, r.ToBotIDSnake) != "":
+			receiverType = "bot"
+		case route.isDirect():
+			receiverType, _, _ = route.counterparty(senderType, senderID)
+		}
+	}
+	receiverID := firstNonEmpty(
+		r.ToID,
+		r.ToIDSnake,
+		r.ToBotID,
+		r.ToBotIDSnake,
+		r.ToGroupID,
+		r.ToGroupIDSnake,
+	)
+	if r.To != nil {
+		receiverType = firstNonEmpty(r.To.Type, receiverType)
+		receiverID = firstNonEmpty(r.To.ID, receiverID)
+	}
+	if receiverID == "" && route.isDirect() {
+		_, receiverID, _ = route.counterparty(senderType, senderID)
+	}
+	if receiverType == "" || receiverID == "" {
+		return normalizedMessage{}, fmt.Errorf("missing message target")
+	}
+
+	contentType := firstNonEmpty(r.ContentType, r.ContentTypeSnake)
+	body := r.Body
+	meta := firstNonEmptyMap(r.Meta, r.Metadata)
+	contentPayload, legacyText := decodeContentPayload(r.ContentRaw)
+	if contentPayload != nil {
+		contentType = firstNonEmpty(contentPayload.Type, contentType)
+		body = firstNonEmpty(contentPayload.Body, body)
+		meta = firstNonEmptyMap(contentPayload.Meta, meta)
+	}
+	if body == "" {
+		body = legacyText
+	}
+	body = normalizeMessageBody(contentType, body, meta)
 	if contentType == "" {
 		contentType = string(model.MsgTypeText)
 	}
@@ -501,39 +647,253 @@ func buildRealtimePayload(message *model.Message) map[string]interface{} {
 		from["name"] = *message.SenderName
 	}
 
+	toType, toID := "", ""
+	if route.groupID != "" {
+		toType, toID = "group", route.groupID
+	} else {
+		toType, toID, _ = route.counterparty(string(message.SenderType), senderID)
+	}
+
 	return map[string]interface{}{
 		"id":        message.MessageID.String(),
 		"from":      from,
-		"to":        map[string]interface{}{"type": route.toType, "id": route.toID},
+		"to":        map[string]interface{}{"type": toType, "id": toID},
 		"content":   map[string]interface{}{"type": string(message.MsgType), "body": message.Content, "meta": copyMapFromJSON(message.Metadata)},
 		"timestamp": message.CreatedAt.Unix(),
 		"seq":       message.Seq,
 	}
 }
 
+func buildMessageModel(normalized normalizedMessage) *model.Message {
+	msgID, err := uuid.Parse(normalized.messageID)
+	if err != nil {
+		msgID = uuid.New()
+	}
+
+	ts := time.Now()
+	if normalized.timestamp > 0 {
+		ts = normalizeUnixTimestamp(normalized.timestamp)
+	}
+
+	metadata := model.JSONMap(model.RemoveEphemeralAssetFields(normalized.meta))
+	if metadata == nil {
+		metadata = make(model.JSONMap)
+	}
+
+	return &model.Message{
+		ConversationID: normalized.conversationID,
+		MessageID:      msgID,
+		SenderType:     model.SenderType(normalized.senderType),
+		SenderID:       parseOptionalUUID(normalized.senderID),
+		SenderName:     strPtrOrNil(normalized.senderName),
+		BotID:          parseOptionalUUID(normalized.botID),
+		GroupID:        parseOptionalUUID(normalized.groupID),
+		MsgType:        model.MsgType(normalized.contentType),
+		Content:        normalized.body,
+		Metadata:       metadata,
+		MQTTTopic:      normalized.conversationID,
+		QOS:            1,
+		Seq:            0,
+		CreatedAt:      ts,
+	}
+}
+
+func (s *MessageService) enrichNormalizedMessage(ctx context.Context, normalized *normalizedMessage) error {
+	if normalized == nil || normalized.receiverType != "group" || normalized.receiverID == "" {
+		return nil
+	}
+
+	groupID, ok := parseUUIDValue(normalized.receiverID)
+	if !ok {
+		return nil
+	}
+
+	botMembers, err := s.groupRepo.ListBotMembers(ctx, groupID)
+	if err != nil {
+		return err
+	}
+
+	mentionedBotIDs := extractMentionedBotIDs(normalized.body, botMembers)
+	if len(mentionedBotIDs) == 0 {
+		if normalized.meta != nil {
+			delete(normalized.meta, mentionedBotIDsMetaKey)
+		}
+		return nil
+	}
+
+	if normalized.meta == nil {
+		normalized.meta = make(map[string]interface{}, 1)
+	}
+	normalized.meta[mentionedBotIDsMetaKey] = mentionedBotIDs
+	return nil
+}
+
+func (s *MessageService) prepareNormalizedMessage(ctx context.Context, normalized *normalizedMessage) error {
+	if normalized == nil {
+		return nil
+	}
+	if s.assetSvc == nil {
+		return nil
+	}
+
+	resolvedMeta, err := s.assetSvc.ResolveMessageAsset(ctx, normalized.senderType, normalized.senderID, normalized.contentType, normalized.meta)
+	if err != nil {
+		return err
+	}
+	normalized.meta = resolvedMeta
+	normalized.body = normalizeMessageBody(normalized.contentType, normalized.body, normalized.meta)
+	return nil
+}
+
+func (s *MessageService) hydrateMessages(ctx context.Context, messages []model.Message) []model.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	hydrated := make([]model.Message, 0, len(messages))
+	for index := range messages {
+		hydrated = append(hydrated, *s.hydrateMessage(ctx, &messages[index]))
+	}
+	return hydrated
+}
+
+func (s *MessageService) hydrateMessage(ctx context.Context, message *model.Message) *model.Message {
+	if message == nil || s.assetSvc == nil {
+		return message
+	}
+
+	copy := *message
+	meta := s.assetSvc.HydrateMessageAsset(ctx, copyMapFromJSON(copy.Metadata))
+	copy.Metadata = model.JSONMap(meta)
+	return &copy
+}
+
+func extractMentionedBotIDs(body string, botMembers []model.BotGroupMember) []string {
+	body = strings.TrimSpace(body)
+	if body == "" || len(botMembers) == 0 {
+		return nil
+	}
+
+	aliasMap := make(map[string][]string)
+	for _, member := range botMembers {
+		botID := member.BotID.String()
+		for _, alias := range candidateBotAliases(member) {
+			aliasMap[alias] = append(aliasMap[alias], botID)
+		}
+	}
+
+	type mentionAlias struct {
+		alias string
+		botID string
+	}
+
+	aliases := make([]mentionAlias, 0, len(aliasMap))
+	for alias, botIDs := range aliasMap {
+		if len(botIDs) != 1 {
+			continue
+		}
+		aliases = append(aliases, mentionAlias{
+			alias: alias,
+			botID: botIDs[0],
+		})
+	}
+
+	sort.Slice(aliases, func(i, j int) bool {
+		if len(aliases[i].alias) == len(aliases[j].alias) {
+			return aliases[i].alias < aliases[j].alias
+		}
+		return len(aliases[i].alias) > len(aliases[j].alias)
+	})
+
+	seen := make(map[string]struct{})
+	mentioned := make([]string, 0, len(aliases))
+
+	for index := 0; index < len(body); {
+		r, size := utf8.DecodeRuneInString(body[index:])
+		if r != '@' && r != '＠' {
+			index += size
+			continue
+		}
+
+		remaining := body[index+size:]
+		matched := false
+		for _, alias := range aliases {
+			if !strings.HasPrefix(remaining, alias.alias) {
+				continue
+			}
+			if !hasMentionBoundary(remaining[len(alias.alias):]) {
+				continue
+			}
+			if _, exists := seen[alias.botID]; !exists {
+				seen[alias.botID] = struct{}{}
+				mentioned = append(mentioned, alias.botID)
+			}
+			index += size + len(alias.alias)
+			matched = true
+			break
+		}
+
+		if !matched {
+			index += size
+		}
+	}
+
+	return mentioned
+}
+
+func candidateBotAliases(member model.BotGroupMember) []string {
+	aliases := []string{member.BotID.String()}
+	if member.Nickname != nil {
+		if alias := normalizeMentionAlias(*member.Nickname); alias != "" {
+			aliases = append(aliases, alias)
+		}
+	}
+	if member.Bot != nil {
+		if alias := normalizeMentionAlias(member.Bot.Name); alias != "" {
+			aliases = append(aliases, alias)
+		}
+	}
+	return aliases
+}
+
+func normalizeMentionAlias(raw string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "@"))
+}
+
+func hasMentionBoundary(remaining string) bool {
+	if remaining == "" {
+		return true
+	}
+
+	r, _ := utf8.DecodeRuneInString(remaining)
+	return unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r)
+}
+
 type messageRoute struct {
-	fromType string
-	fromID   string
-	toType   string
-	toID     string
-	groupID  string
+	leftType  string
+	leftID    string
+	rightType string
+	rightID   string
+	groupID   string
 }
 
 func parseMessageRoute(topic string) messageRoute {
 	parts := splitMessageTopic(NormalizeConversationReference(topic))
-	if len(parts) == 6 && parts[0] == "chat" && parts[3] == "to" {
+	if len(parts) == 6 && parts[0] == "chat" && parts[1] == "dm" {
 		return messageRoute{
-			fromType: parts[1],
-			fromID:   parts[2],
-			toType:   parts[4],
-			toID:     parts[5],
+			leftType:  parts[2],
+			leftID:    parts[3],
+			rightType: parts[4],
+			rightID:   parts[5],
 		}
 	}
 	if len(parts) == 3 && parts[0] == "chat" && parts[1] == "group" {
 		return messageRoute{
-			toType:  "group",
-			toID:    parts[2],
-			groupID: parts[2],
+			leftType:  "",
+			leftID:    "",
+			rightType: "",
+			rightID:   "",
+			groupID:   parts[2],
 		}
 	}
 	return messageRoute{}
@@ -543,7 +903,9 @@ func buildRealtimeConversationID(senderType, senderID, receiverType, receiverID 
 	if receiverType == "group" {
 		return fmt.Sprintf("chat/group/%s", receiverID)
 	}
-	return fmt.Sprintf("chat/%s/%s/to/%s/%s", senderType, senderID, receiverType, receiverID)
+
+	leftType, leftID, rightType, rightID := canonicalizeDirectRoute(senderType, senderID, receiverType, receiverID)
+	return fmt.Sprintf("chat/dm/%s/%s/%s/%s", leftType, leftID, rightType, rightID)
 }
 
 func parseOptionalUUID(raw string) *uuid.UUID {
@@ -555,6 +917,82 @@ func parseOptionalUUID(raw string) *uuid.UUID {
 		return nil
 	}
 	return &parsed
+}
+
+func normalizeUnixTimestamp(value int64) time.Time {
+	if value <= 0 {
+		return time.Now()
+	}
+
+	// Accept both Unix seconds and Unix milliseconds.
+	if value >= 1_000_000_000_000 {
+		return time.UnixMilli(value)
+	}
+
+	return time.Unix(value, 0)
+}
+
+func canonicalizeDirectRoute(leftType, leftID, rightType, rightID string) (string, string, string, string) {
+	leftRank := directPeerRank(leftType)
+	rightRank := directPeerRank(rightType)
+
+	if leftRank != rightRank {
+		if leftRank < rightRank {
+			return leftType, leftID, rightType, rightID
+		}
+		return rightType, rightID, leftType, leftID
+	}
+
+	if leftID <= rightID {
+		return leftType, leftID, rightType, rightID
+	}
+
+	return rightType, rightID, leftType, leftID
+}
+
+func directPeerRank(kind string) int {
+	switch kind {
+	case "user":
+		return 0
+	case "bot":
+		return 1
+	case "channel":
+		return 2
+	case "system":
+		return 3
+	default:
+		return 4
+	}
+}
+
+func (r messageRoute) isDirect() bool {
+	return r.leftType != "" && r.leftID != "" && r.rightType != "" && r.rightID != ""
+}
+
+func (r messageRoute) hasParticipant(kind, id string) bool {
+	return (r.leftType == kind && r.leftID == id) || (r.rightType == kind && r.rightID == id)
+}
+
+func (r messageRoute) counterparty(kind, id string) (string, string, bool) {
+	switch {
+	case r.leftType == kind && r.leftID == id:
+		return r.rightType, r.rightID, r.rightType != "" && r.rightID != ""
+	case r.rightType == kind && r.rightID == id:
+		return r.leftType, r.leftID, r.leftType != "" && r.leftID != ""
+	default:
+		return "", "", false
+	}
+}
+
+func (r messageRoute) matchesDirectedPair(senderType, senderID, receiverType, receiverID string) bool {
+	if !r.isDirect() {
+		return false
+	}
+	if senderType == receiverType && senderID == receiverID {
+		return false
+	}
+
+	return r.hasParticipant(senderType, senderID) && r.hasParticipant(receiverType, receiverID)
 }
 
 func strPtrOrNil(value string) *string {
@@ -586,12 +1024,7 @@ func copyMapFromJSON(source model.JSONMap) map[string]interface{} {
 	if source == nil {
 		return nil
 	}
-
-	copied := make(map[string]interface{}, len(source))
-	for key, value := range source {
-		copied[key] = value
-	}
-	return copied
+	return model.CloneStringMap(source)
 }
 
 func splitMessageTopic(topic string) []string {
@@ -631,4 +1064,23 @@ func decodeContentPayload(raw json.RawMessage) (*MessageContentPayload, string) 
 	}
 
 	return nil, ""
+}
+
+func normalizeMessageBody(contentType string, body string, meta map[string]interface{}) string {
+	trimmed := strings.TrimSpace(body)
+	if trimmed != "" || contentType == "" || contentType == string(model.MsgTypeText) {
+		return trimmed
+	}
+
+	payload := model.AssetPayloadFromMap(meta)
+	if payload == nil {
+		return trimmed
+	}
+	if payload.FileName != "" {
+		return payload.FileName
+	}
+	if contentType == string(model.MsgTypeImage) {
+		return "Image"
+	}
+	return trimmed
 }

@@ -1,0 +1,53 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local tooling
+/.codex
+
+# Logs / runtime
+/logs/
+/run/
+*.log
+*.pid
+*.pid.lock
+
+# Environment / local overrides
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.env
+!*.env.example
+*.local
+
+# Frontend (Next.js)
+/frontend/node_modules/
+/frontend/.next/
+/frontend/out/
+/frontend/.turbo/
+/frontend/tsconfig.tsbuildinfo
+
+# Plugin (Node.js / TypeScript)
+/plugins/*/node_modules/
+/plugins/*/dist/
+/plugins/*/data/
+/plugins/*/.test-agent.config.json
+
+# Node package manager caches
+.npm/
+.pnpm-store/
+.yarn/
+
+# Backend (Go)
+/backend/.cache/
+/backend/bin/
+/backend/server
+*.test
+.coverprofile
+coverage.out

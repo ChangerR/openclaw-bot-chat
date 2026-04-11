@@ -49,6 +49,28 @@ websocket:
   send_queue_size: 256
   broadcast_queue_size: 256
 
+storage:
+  provider: "cos" # cos, oss
+  bucket: ""
+  region: ""
+  endpoint: ""
+  public_base_url: ""
+  private_read: true
+  upload_url_ttl: 900
+  download_url_ttl: 900
+  key_prefix: "chat-assets"
+  cos:
+    secret_id: ""
+    secret_key: ""
+    session_token: ""
+  oss:
+    access_key_id: ""
+    access_key_secret: ""
+    security_token: ""
+
+asset:
+  max_image_size_mb: 10
+
 log:
   level: debug  # debug, info, warn, error
   format: json  # json, console

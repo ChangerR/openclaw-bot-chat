@@ -108,6 +108,14 @@ go run ./cmd/server
 | GET /api/v1/ws?token=<jwt> | User WebSocket session (JWT) |
 | GET /api/v1/ws + `X-Bot-Key` | Bot WebSocket session (validated bot key) |
 
+### Bot Runtime
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | /api/v1/bot-runtime/bootstrap | Return bot bootstrap info for plugin runtime |
+| POST | /api/v1/bot-runtime/messages | Send bot reply through HTTP with `X-Bot-Key` |
+| POST | /api/v1/bot-runtime/heartbeat | Optional runtime heartbeat |
+| GET | /api/v1/bot-runtime/dialogs/:dialog_id/messages | Fetch dialog messages for replay / recovery |
+
 ## MQTT Topics
 
 MQTT routing only trusts the topic path itself. `bots.mqtt_topic` and `groups.mqtt_topic` are legacy fields and are not the route source.
@@ -173,8 +181,8 @@ backend/
 ## Docker
 
 ```bash
-# With docker-compose
-docker-compose up -d
+# With Docker Compose v2
+docker compose up -d
 
 # Manual
 docker build -t openclaw-backend .

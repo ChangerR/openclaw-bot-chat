@@ -46,6 +46,21 @@ func (r *GroupRepository) ListByUser(ctx context.Context, userID uuid.UUID, page
 	return groups, total, nil
 }
 
+func (r *GroupRepository) ListByBot(ctx context.Context, botID uuid.UUID) ([]model.Group, error) {
+	var groups []model.Group
+	subQuery := r.db.WithContext(ctx).
+		Model(&model.BotGroupMember{}).
+		Select("group_id").
+		Where("bot_id = ? AND is_active = true", botID)
+
+	err := r.db.WithContext(ctx).
+		Preload("Owner").
+		Where("is_active = true AND id IN (?)", subQuery).
+		Order("created_at DESC").
+		Find(&groups).Error
+	return groups, err
+}
+
 func (r *GroupRepository) Update(ctx context.Context, group *model.Group) error {
 	return r.db.WithContext(ctx).Save(group).Error
 }

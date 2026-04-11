@@ -17,6 +17,9 @@ type MessagePeerResponse struct {
 type MessageContentResponse struct {
 	Type string                 `json:"type"`
 	Body string                 `json:"body"`
+	URL  string                 `json:"url,omitempty"`
+	Name string                 `json:"name,omitempty"`
+	Size int64                  `json:"size,omitempty"`
 	Meta map[string]interface{} `json:"meta,omitempty"`
 }
 
@@ -80,6 +83,9 @@ func NewMessageResponse(message *model.Message) *MessageResponse {
 		Content: MessageContentResponse{
 			Type: string(message.MsgType),
 			Body: message.Content,
+			URL:  assetURLFromMeta(metadata),
+			Name: assetNameFromMeta(metadata),
+			Size: assetSizeFromMeta(metadata),
 			Meta: metadata,
 		},
 		Timestamp:  message.CreatedAt.Unix(),
@@ -96,6 +102,39 @@ func NewMessageResponse(message *model.Message) *MessageResponse {
 		Seq:        message.Seq,
 		CreatedAt:  message.CreatedAt,
 	}
+}
+
+func assetURLFromMeta(meta map[string]interface{}) string {
+	payload := model.AssetPayloadFromMap(meta)
+	if payload == nil {
+		return ""
+	}
+	if payload.DownloadURL != "" {
+		return payload.DownloadURL
+	}
+	if payload.ExternalURL != "" {
+		return payload.ExternalURL
+	}
+	if payload.SourceURL != "" {
+		return payload.SourceURL
+	}
+	return ""
+}
+
+func assetNameFromMeta(meta map[string]interface{}) string {
+	payload := model.AssetPayloadFromMap(meta)
+	if payload == nil {
+		return ""
+	}
+	return payload.FileName
+}
+
+func assetSizeFromMeta(meta map[string]interface{}) int64 {
+	payload := model.AssetPayloadFromMap(meta)
+	if payload == nil {
+		return 0
+	}
+	return payload.Size
 }
 
 func NewMessageResponses(messages []model.Message) []MessageResponse {
@@ -147,7 +186,7 @@ func NewConversationInfoResponse(conversationID string, lastMessage *model.Messa
 		return response
 	}
 
-	if len(parts) == 6 && parts[0] == "chat" && parts[3] == "to" {
+	if len(parts) == 6 && parts[0] == "chat" && parts[1] == "dm" {
 		response.Type = parts[4]
 		response.TargetID = parts[5]
 		switch response.Type {
@@ -177,11 +216,16 @@ func buildMessagePeers(message *model.Message) (MessagePeerResponse, MessagePeer
 	topicParts := splitTopic(message.ConversationID)
 	if len(topicParts) >= 3 && topicParts[0] == "chat" {
 		switch {
-		case len(topicParts) == 6 && topicParts[3] == "to":
-			return ensurePeer(from), MessagePeerResponse{
-				Type: topicParts[4],
-				ID:   topicParts[5],
+		case len(topicParts) == 6 && topicParts[1] == "dm":
+			leftType, leftID := topicParts[2], topicParts[3]
+			rightType, rightID := topicParts[4], topicParts[5]
+			if from.Type == leftType && from.ID == leftID {
+				return ensurePeer(from), MessagePeerResponse{Type: rightType, ID: rightID}
 			}
+			if from.Type == rightType && from.ID == rightID {
+				return ensurePeer(from), MessagePeerResponse{Type: leftType, ID: leftID}
+			}
+			return ensurePeer(from), MessagePeerResponse{Type: rightType, ID: rightID}
 		case len(topicParts) == 3 && topicParts[1] == "group":
 			return ensurePeer(from), MessagePeerResponse{
 				Type: "group",

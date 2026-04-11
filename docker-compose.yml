@@ -4,14 +4,14 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: openclaw_bot_chat
+      POSTGRES_USER: ${DATABASE_USER:-postgres}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-postgres}
+      POSTGRES_DB: ${DATABASE_DBNAME:-openclaw_bot_chat}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT_MAPPING:-5432:5432}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./backend/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -21,7 +21,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT_MAPPING:-6379:6379}"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -36,8 +36,8 @@ services:
       - "1883"
       - "9001"
     environment:
-      MQTT_USERNAME: openclaw_backend
-      MQTT_PASSWORD: change-me-in-production
+      MQTT_USERNAME: ${MQTT_USERNAME:-openclaw_backend}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-change-me-in-production}
     command:
       - /bin/sh
       - -c
@@ -47,8 +47,8 @@ services:
         chmod 600 /mosquitto/config/passwd
         exec mosquitto -c /mosquitto/config/mosquitto.conf
     volumes:
-      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
-      - ./mosquitto.acl:/mosquitto/config/aclfile
+      - ./backend/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./backend/mosquitto.acl:/mosquitto/config/aclfile
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_pub -u \"$${MQTT_USERNAME}\" -P \"$${MQTT_PASSWORD}\" -t healthcheck/ping -m ok -q 0"]
       interval: 10s
@@ -56,9 +56,9 @@ services:
       retries: 3
 
   backend:
-    build: .
+    build: ./backend
     ports:
-      - "8080:8080"
+      - "${BACKEND_PORT_MAPPING:-8080:8080}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,14 +67,23 @@ services:
       mosquitto:
         condition: service_healthy
     volumes:
-      - ./config.yaml:/app/config.yaml
+      - ./backend/config.yaml:/app/config.yaml
     environment:
       - TZ=Asia/Shanghai
       - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=${DATABASE_USER:-postgres}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-postgres}
+      - DATABASE_DBNAME=${DATABASE_DBNAME:-openclaw_bot_chat}
       - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - MQTT_BROKER=tcp://mosquitto:1883
-      - MQTT_USERNAME=openclaw_backend
-      - MQTT_PASSWORD=change-me-in-production
+      - MQTT_USERNAME=${MQTT_USERNAME:-openclaw_backend}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-change-me-in-production}
+      - MQTT_TOPIC_PREFIX=${MQTT_TOPIC_PREFIX:-chat}
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - APP_MODE=${APP_MODE:-release}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health | grep -q '\"status\":\"ok\"'"]
       interval: 10s
@@ -83,18 +92,19 @@ services:
 
   frontend:
     build:
-      context: ../frontend
+      context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_BASE_URL: /api/v1
-        VITE_MQTT_BROKER_URL: ""
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_API_WS_HOST: ${NEXT_PUBLIC_API_WS_HOST:-}
     ports:
-      - "4173:4173"
+      - "${FRONTEND_PORT_MAPPING:-3000:3000}"
     depends_on:
       backend:
         condition: service_healthy
     environment:
       - TZ=Asia/Shanghai
+      - NODE_ENV=production
 
 volumes:
   postgres_data:

@@ -20,14 +20,14 @@ const (
 )
 
 type User struct {
-	ID           uuid.UUID      `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
-	Username     string         `gorm:"type:varchar(64);uniqueIndex;not null"`
-	Email        string         `gorm:"type:varchar(255);uniqueIndex;not null"`
-	PasswordHash string         `gorm:"type:varchar(255);not null"`
-	Nickname     *string        `gorm:"type:varchar(128)"`
-	AvatarURL    *string        `gorm:"type:varchar(512)"`
-	Status       UserStatus     `gorm:"type:smallint;not null;default:1"`
-	IsDeleted    bool           `gorm:"not null;default:false"`
+	ID           uuid.UUID  `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
+	Username     string     `gorm:"type:varchar(64);uniqueIndex;not null"`
+	Email        string     `gorm:"type:varchar(255);uniqueIndex;not null"`
+	PasswordHash string     `gorm:"type:varchar(255);not null"`
+	Nickname     *string    `gorm:"type:varchar(128)"`
+	AvatarURL    *string    `gorm:"type:varchar(512)"`
+	Status       UserStatus `gorm:"type:smallint;not null;default:1"`
+	IsDeleted    bool       `gorm:"not null;default:false"`
 	LastLoginAt  *time.Time
 	LastLoginIP  *string        `gorm:"type:varchar(45)"`
 	CreatedAt    time.Time      `gorm:"not null;default:now()"`
@@ -76,17 +76,17 @@ func (Bot) TableName() string { return "bots" }
 // --- BotKey ---
 
 type BotKey struct {
-	ID         uuid.UUID  `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
-	BotID      uuid.UUID  `gorm:"type:uuid;not null"`
-	KeyPrefix  string     `gorm:"type:varchar(32);not null"`
-	KeyHash    string     `gorm:"type:varchar(255);not null"`
-	Name       *string    `gorm:"type:varchar(128)"`
+	ID         uuid.UUID `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
+	BotID      uuid.UUID `gorm:"type:uuid;not null"`
+	KeyPrefix  string    `gorm:"type:varchar(32);not null"`
+	KeyHash    string    `gorm:"type:varchar(255);not null"`
+	Name       *string   `gorm:"type:varchar(128)"`
 	LastUsedAt *time.Time
-	LastUsedIP *string    `gorm:"type:varchar(45)"`
+	LastUsedIP *string `gorm:"type:varchar(45)"`
 	ExpiresAt  *time.Time
-	IsActive   bool       `gorm:"not null;default:true"`
-	CreatedAt  time.Time  `gorm:"not null;default:now()"`
-	Bot        *Bot       `gorm:"foreignKey:BotID"`
+	IsActive   bool      `gorm:"not null;default:true"`
+	CreatedAt  time.Time `gorm:"not null;default:now()"`
+	Bot        *Bot      `gorm:"foreignKey:BotID"`
 }
 
 func (BotKey) TableName() string { return "bot_keys" }
@@ -132,6 +132,46 @@ type Message struct {
 }
 
 func (Message) TableName() string { return "messages" }
+
+// --- Asset ---
+
+type AssetKind string
+
+const (
+	AssetKindImage AssetKind = "image"
+)
+
+type AssetStatus string
+
+const (
+	AssetStatusPending AssetStatus = "pending"
+	AssetStatusReady   AssetStatus = "ready"
+	AssetStatusFailed  AssetStatus = "failed"
+)
+
+type Asset struct {
+	ID              uuid.UUID      `gorm:"type:uuid;primary_key;default:uuid_generate_v4()"`
+	Kind            AssetKind      `gorm:"type:varchar(32);not null"`
+	StorageProvider string         `gorm:"type:varchar(32);not null"`
+	Bucket          string         `gorm:"type:varchar(255);not null"`
+	ObjectKey       string         `gorm:"type:varchar(1024);not null;uniqueIndex"`
+	MIMEType        string         `gorm:"type:varchar(255);not null"`
+	Size            int64          `gorm:"not null;default:0"`
+	FileName        string         `gorm:"type:varchar(512);not null"`
+	Width           *int           `gorm:"type:int"`
+	Height          *int           `gorm:"type:int"`
+	SHA256          *string        `gorm:"type:varchar(128)"`
+	Status          AssetStatus    `gorm:"type:varchar(32);not null;default:'pending'"`
+	OwnerUserID     *uuid.UUID     `gorm:"type:uuid;index"`
+	OwnerBotID      *uuid.UUID     `gorm:"type:uuid;index"`
+	SourceURL       *string        `gorm:"type:text"`
+	Metadata        JSONMap        `gorm:"type:jsonb"`
+	CreatedAt       time.Time      `gorm:"not null;default:now()"`
+	UpdatedAt       time.Time      `gorm:"not null;default:now()"`
+	DeletedAt       gorm.DeletedAt `gorm:"index"`
+}
+
+func (Asset) TableName() string { return "assets" }
 
 // --- Group ---
 
@@ -197,22 +237,22 @@ func (BotGroupMember) TableName() string { return "bot_group_members" }
 type AuditAction string
 
 const (
-	AuditActionLogin        AuditAction = "login"
-	AuditActionLogout       AuditAction = "logout"
-	AuditActionRegister     AuditAction = "register"
+	AuditActionLogin          AuditAction = "login"
+	AuditActionLogout         AuditAction = "logout"
+	AuditActionRegister       AuditAction = "register"
 	AuditActionUpdateProfile  AuditAction = "update_profile"
 	AuditActionChangePassword AuditAction = "change_password"
-	AuditActionCreateBot    AuditAction = "create_bot"
-	AuditActionUpdateBot    AuditAction = "update_bot"
-	AuditActionDeleteBot    AuditAction = "delete_bot"
-	AuditActionCreateKey    AuditAction = "create_key"
-	AuditActionRevokeKey    AuditAction = "revoke_key"
-	AuditActionCreateGroup  AuditAction = "create_group"
-	AuditActionUpdateGroup  AuditAction = "update_group"
-	AuditActionDeleteGroup  AuditAction = "delete_group"
-	AuditActionAddMember    AuditAction = "add_member"
-	AuditActionRemoveMember AuditAction = "remove_member"
-	AuditActionSendMessage  AuditAction = "send_message"
+	AuditActionCreateBot      AuditAction = "create_bot"
+	AuditActionUpdateBot      AuditAction = "update_bot"
+	AuditActionDeleteBot      AuditAction = "delete_bot"
+	AuditActionCreateKey      AuditAction = "create_key"
+	AuditActionRevokeKey      AuditAction = "revoke_key"
+	AuditActionCreateGroup    AuditAction = "create_group"
+	AuditActionUpdateGroup    AuditAction = "update_group"
+	AuditActionDeleteGroup    AuditAction = "delete_group"
+	AuditActionAddMember      AuditAction = "add_member"
+	AuditActionRemoveMember   AuditAction = "remove_member"
+	AuditActionSendMessage    AuditAction = "send_message"
 )
 
 type AuditLog struct {

@@ -49,6 +49,7 @@ type AuthPayloadResponse struct {
 type MeResponse struct {
 	ID             uuid.UUID `json:"id"`
 	Username       string    `json:"username"`
+	Email          string    `json:"email"`
 	Nickname       string    `json:"nickname"`
 	Avatar         *string   `json:"avatar,omitempty"`
 	AvatarURL      *string   `json:"avatar_url,omitempty"`
@@ -115,6 +116,7 @@ func NewMeResponse(user *model.User) *MeResponse {
 	return &MeResponse{
 		ID:             user.ID,
 		Username:       user.Username,
+		Email:          user.Email,
 		Nickname:       userNickname(user),
 		Avatar:         user.AvatarURL,
 		AvatarURL:      user.AvatarURL,

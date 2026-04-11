@@ -18,6 +18,7 @@ import (
 	"github.com/openclaw-bot-chat/backend/internal/mqtt"
 	"github.com/openclaw-bot-chat/backend/internal/repository"
 	"github.com/openclaw-bot-chat/backend/internal/service"
+	"github.com/openclaw-bot-chat/backend/internal/storage"
 	"github.com/openclaw-bot-chat/backend/internal/websocket"
 	"github.com/openclaw-bot-chat/backend/pkg/jwt"
 	"github.com/redis/go-redis/v9"
@@ -75,12 +76,20 @@ func main() {
 	keyRepo := repository.NewBotKeyRepository(db)
 	msgRepo := repository.NewMessageRepository(db)
 	groupRepo := repository.NewGroupRepository(db)
+	assetRepo := repository.NewAssetRepository(db)
 	auditRepo := repository.NewAuditLogRepository(db)
+
+	// --- Object Storage ---
+	objectStorage, err := storage.NewProvider(cfg.Storage)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to setup object storage")
+	}
 
 	// --- Services ---
 	authService := service.NewAuthService(userRepo, auditRepo, jwtManager)
 	botService := service.NewBotService(botRepo, keyRepo, auditRepo)
-	msgService := service.NewMessageService(msgRepo, botRepo, groupRepo, auditRepo)
+	assetService := service.NewAssetService(assetRepo, objectStorage, cfg.Storage, cfg.Asset)
+	msgService := service.NewMessageService(msgRepo, botRepo, groupRepo, assetRepo, auditRepo, assetService)
 	groupService := service.NewGroupService(groupRepo, botRepo, auditRepo)
 
 	// --- MQTT Client ---
@@ -121,10 +130,12 @@ func main() {
 	authHandler := handler.NewAuthHandler(authService)
 	botHandler := handler.NewBotHandler(botService)
 	msgHandler := handler.NewMessageHandler(msgService)
+	assetHandler := handler.NewAssetHandler(assetService)
+	botRuntimeHandler := handler.NewBotRuntimeHandler(msgService)
 	groupHandler := handler.NewGroupHandler(groupService)
 
 	// --- Routes ---
-	setupRoutes(router, authHandler, botHandler, msgHandler, groupHandler, botService, jwtManager, wsHub, log)
+	setupRoutes(router, authHandler, botHandler, msgHandler, assetHandler, botRuntimeHandler, groupHandler, botService, jwtManager, wsHub, log)
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -180,6 +191,7 @@ func setupDatabase(cfg *config.Config, log zerolog.Logger) (*gorm.DB, error) {
 		&model.Bot{},
 		&model.BotKey{},
 		&model.Message{},
+		&model.Asset{},
 		&model.Group{},
 		&model.GroupMember{},
 		&model.BotGroupMember{},
@@ -214,6 +226,8 @@ func setupRoutes(
 	authHandler *handler.AuthHandler,
 	botHandler *handler.BotHandler,
 	msgHandler *handler.MessageHandler,
+	assetHandler *handler.AssetHandler,
+	botRuntimeHandler *handler.BotRuntimeHandler,
 	groupHandler *handler.GroupHandler,
 	botService *service.BotService,
 	jwtManager *jwt.Manager,
@@ -236,6 +250,15 @@ func setupRoutes(
 
 	// WebSocket accepts either a user JWT or a validated bot key.
 	api.GET("/ws", middleware.OptionalBotKeyAuth(botService), websocket.HandleWebSocket(jwtManager, wsHub, log))
+
+	botRuntime := api.Group("/bot-runtime")
+	botRuntime.Use(middleware.BotKeyAuth(botService))
+	{
+		botRuntime.GET("/bootstrap", botRuntimeHandler.Bootstrap)
+		botRuntime.POST("/messages", botRuntimeHandler.SendMessage)
+		botRuntime.POST("/heartbeat", botRuntimeHandler.Heartbeat)
+		botRuntime.GET("/dialogs/:dialog_id/messages", botRuntimeHandler.GetDialogMessages)
+	}
 
 	// Protected routes
 	protected := api.Group("")
@@ -263,6 +286,8 @@ func setupRoutes(
 		protected.GET("/messages/*conversation_id", msgHandler.GetMessagesByConversation)
 		protected.POST("/messages", msgHandler.SendMessage)
 		protected.GET("/conversations", msgHandler.GetConversations)
+		protected.POST("/assets/image/upload-prepare", assetHandler.PrepareImageUpload)
+		protected.POST("/assets/image/complete", assetHandler.CompleteImageUpload)
 
 		// Groups
 		protected.GET("/groups", groupHandler.List)

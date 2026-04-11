@@ -219,6 +219,10 @@ func (c *Client) Publish(topic string, payload interface{}, qos byte) error {
 		return token.Error()
 	}
 	c.log.Debug().Str("topic", topic).Int("len", len(data)).Msg("MQTT message published")
+	c.persistPublishedMessage(topic, data)
+	// Mirror locally so WebSocket bridges and in-process subscribers do not
+	// depend on broker self-delivery semantics.
+	c.deliverToSubscribers(topic, data)
 	return nil
 }
 
@@ -231,7 +235,18 @@ func (c *Client) PublishRaw(topic string, payload []byte, qos byte) error {
 	if token.Wait() && token.Error() != nil {
 		return token.Error()
 	}
+	c.persistPublishedMessage(topic, payload)
+	c.deliverToSubscribers(topic, payload)
 	return nil
+}
+
+func (c *Client) persistPublishedMessage(topic string, payload []byte) {
+	if c.ingress == nil {
+		return
+	}
+	if err := c.ingress.HandleIncomingMessage(topic, payload); err != nil {
+		c.log.Error().Err(err).Str("topic", topic).Msg("failed to persist published MQTT message")
+	}
 }
 
 // Disconnect gracefully disconnects from the MQTT broker

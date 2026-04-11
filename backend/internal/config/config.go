@@ -10,13 +10,15 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	App      AppConfig
-	Database DatabaseConfig
-	Redis    RedisConfig
-	MQTT     MQTTConfig
-	JWT      JWTConfig
+	App       AppConfig
+	Database  DatabaseConfig
+	Redis     RedisConfig
+	MQTT      MQTTConfig
+	JWT       JWTConfig
 	WebSocket WebSocketConfig
-	Log      LogConfig
+	Storage   StorageConfig
+	Asset     AssetConfig
+	Log       LogConfig
 }
 
 // AppConfig holds application-level settings
@@ -80,6 +82,36 @@ type WebSocketConfig struct {
 	BroadcastQueueSize int
 }
 
+type StorageConfig struct {
+	Provider       string
+	Bucket         string
+	Region         string
+	Endpoint       string
+	PublicBaseURL  string
+	PrivateRead    bool
+	UploadURLTTL   int
+	DownloadURLTTL int
+	KeyPrefix      string
+	COS            COSStorageConfig
+	OSS            OSSStorageConfig
+}
+
+type COSStorageConfig struct {
+	SecretID     string
+	SecretKey    string
+	SessionToken string
+}
+
+type OSSStorageConfig struct {
+	AccessKeyID     string
+	AccessKeySecret string
+	SecurityToken   string
+}
+
+type AssetConfig struct {
+	MaxImageSizeMB int
+}
+
 // LogConfig holds logging settings
 type LogConfig struct {
 	Level  string // debug, info, warn, error
@@ -109,11 +141,61 @@ func Load(configPath string) (*Config, error) {
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	bindEnvKeys(v,
+		"app.host",
+		"app.port",
+		"app.mode",
 		"database.host",
+		"database.port",
+		"database.user",
+		"database.password",
+		"database.dbname",
+		"database.sslmode",
+		"database.max_open_conns",
+		"database.max_idle_conns",
+		"database.conn_max_lifetime",
 		"redis.host",
+		"redis.port",
+		"redis.password",
+		"redis.db",
+		"redis.pool_size",
 		"mqtt.broker",
+		"mqtt.client_id",
 		"mqtt.username",
 		"mqtt.password",
+		"mqtt.topic_prefix",
+		"mqtt.qos",
+		"mqtt.auto_reconnect",
+		"mqtt.reconnect_delay",
+		"jwt.secret",
+		"jwt.access_token_ttl",
+		"jwt.refresh_token_ttl",
+		"jwt.issuer",
+		"websocket.read_buffer_size",
+		"websocket.write_buffer_size",
+		"websocket.ping_interval",
+		"websocket.pong_timeout",
+		"websocket.write_timeout",
+		"websocket.max_message_size",
+		"websocket.send_queue_size",
+		"websocket.broadcast_queue_size",
+		"storage.provider",
+		"storage.bucket",
+		"storage.region",
+		"storage.endpoint",
+		"storage.public_base_url",
+		"storage.private_read",
+		"storage.upload_url_ttl",
+		"storage.download_url_ttl",
+		"storage.key_prefix",
+		"storage.cos.secret_id",
+		"storage.cos.secret_key",
+		"storage.cos.session_token",
+		"storage.oss.access_key_id",
+		"storage.oss.access_key_secret",
+		"storage.oss.security_token",
+		"asset.max_image_size_mb",
+		"log.level",
+		"log.format",
 	)
 
 	if err := v.ReadInConfig(); err != nil {
@@ -144,6 +226,9 @@ func Load(configPath string) (*Config, error) {
 	if cfg.Redis.PoolSize == 0 {
 		cfg.Redis.PoolSize = 10
 	}
+	if cfg.MQTT.TopicPrefix == "" {
+		cfg.MQTT.TopicPrefix = "chat"
+	}
 	if cfg.JWT.AccessTokenTTL == 0 {
 		cfg.JWT.AccessTokenTTL = 7200
 	}
@@ -173,6 +258,21 @@ func Load(configPath string) (*Config, error) {
 	}
 	if cfg.WebSocket.BroadcastQueueSize == 0 {
 		cfg.WebSocket.BroadcastQueueSize = 256
+	}
+	if cfg.Storage.UploadURLTTL == 0 {
+		cfg.Storage.UploadURLTTL = 900
+	}
+	if cfg.Storage.DownloadURLTTL == 0 {
+		cfg.Storage.DownloadURLTTL = 900
+	}
+	if cfg.Storage.KeyPrefix == "" {
+		cfg.Storage.KeyPrefix = "chat-assets"
+	}
+	if cfg.Asset.MaxImageSizeMB == 0 {
+		cfg.Asset.MaxImageSizeMB = 10
+	}
+	if !cfg.Storage.PrivateRead {
+		cfg.Storage.PrivateRead = true
 	}
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "debug"

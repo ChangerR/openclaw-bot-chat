@@ -16,6 +16,7 @@ import (
 var (
 	ErrUserNotFound       = errors.New("user not found")
 	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrMissingLoginIdentifier = errors.New("missing login identifier")
 	ErrUserAlreadyExists  = errors.New("user already exists")
 	ErrUsernameTaken      = errors.New("username already taken")
 	ErrEmailTaken         = errors.New("email already taken")
@@ -48,7 +49,8 @@ type RegisterRequest struct {
 
 // LoginRequest represents a login request
 type LoginRequest struct {
-	Username string `json:"username" binding:"required"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
 	Password string `json:"password" binding:"required"`
 }
 
@@ -134,7 +136,12 @@ func (s *AuthService) Register(ctx context.Context, req RegisterRequest, ip, use
 
 // Login authenticates a user and returns tokens
 func (s *AuthService) Login(ctx context.Context, req LoginRequest, ip, userAgent string) (*TokenResponse, *model.User, error) {
-	user, err := s.userRepo.GetByUsername(ctx, req.Username)
+	identifier := req.normalizedIdentifier()
+	if identifier == "" {
+		return nil, nil, ErrMissingLoginIdentifier
+	}
+
+	user, err := s.userRepo.GetByUsernameOrEmail(ctx, identifier)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil, ErrInvalidCredentials
@@ -168,6 +175,14 @@ func (s *AuthService) Login(ctx context.Context, req LoginRequest, ip, userAgent
 		ExpiresIn:    7200,
 		TokenType:    "Bearer",
 	}, user, nil
+}
+
+func (r LoginRequest) normalizedIdentifier() string {
+	email := strings.TrimSpace(r.Email)
+	if email != "" {
+		return email
+	}
+	return strings.TrimSpace(r.Username)
 }
 
 // RefreshToken refreshes access token using refresh token

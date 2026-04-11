@@ -48,6 +48,18 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*model.U
 	return &user, nil
 }
 
+func (r *UserRepository) GetByUsernameOrEmail(ctx context.Context, identifier string) (*model.User, error) {
+	var user model.User
+	err := r.db.WithContext(ctx).
+		Where("username = ? OR email = ?", identifier, identifier).
+		First(&user).
+		Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
 func (r *UserRepository) Update(ctx context.Context, user *model.User) error {
 	return r.db.WithContext(ctx).Save(user).Error
 }
