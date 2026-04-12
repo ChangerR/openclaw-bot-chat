@@ -436,14 +436,17 @@ function buildOutgoingContent(input: ComposerMessageInput): Message['content'] {
       url,
       name: asset?.file_name,
       size: asset?.size,
-      meta: asset ? { asset } : {},
+      meta: {
+        ...(asset ? { asset } : {}),
+        ...(input.meta || {}),
+      },
     }
   }
 
   return {
     type: 'text',
     body: input.body?.trim() || '',
-    meta: {},
+    meta: input.meta || {},
   }
 }
 

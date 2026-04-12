@@ -88,6 +88,26 @@ resolve_path() {
   fi
 }
 
+prepare_log_file() {
+  local log_dir
+  local log_file
+  local timestamp
+
+  log_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_LOG_DIR:-plugins/openclaw-bot-chat/data/test-agent/logs}")"
+  mkdir -p "$log_dir"
+
+  if [[ -n "${BOT_CHAT_TEST_AGENT_LOG_FILE:-}" ]]; then
+    log_file="$(resolve_path "$BOT_CHAT_TEST_AGENT_LOG_FILE")"
+    mkdir -p "$(dirname -- "$log_file")"
+  else
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    log_file="$log_dir/test-agent-$timestamp.log"
+  fi
+
+  : >"$log_file"
+  printf '%s\n' "$log_file"
+}
+
 write_generated_config() {
   local bot_chat_base_url
   local bot_chat_access_key
@@ -193,6 +213,7 @@ build_plugin() {
 
 print_runtime_summary() {
   local generated_config="$1"
+  local log_file="$2"
   local bot_chat_base_url
   local bot_chat_access_key
   local bot_chat_bot_id
@@ -211,24 +232,34 @@ Starting Bot Chat test agent
   bot id:       ${bot_chat_bot_id:-<auto>}
   model url:    $(require_env_value OPENAI_COMPAT_BASE_URL)
   model:        ${OPENAI_COMPAT_MODEL:-gpt-4o-mini}
+  log file:     $log_file
+  debug logs:   ${BOT_CHAT_RUNTIME_DEBUG:-1}
 EOF
 }
 
 run_start() {
   local generated_config
+  local log_file
 
   require_env_value OPENAI_COMPAT_BASE_URL >/dev/null
   require_env_value OPENAI_COMPAT_API_KEY >/dev/null
 
   generated_config="$(write_generated_config)"
+  log_file="$(prepare_log_file)"
   ensure_plugin_dependencies
   build_plugin
-  print_runtime_summary "$generated_config"
+  export BOT_CHAT_RUNTIME_DEBUG="${BOT_CHAT_RUNTIME_DEBUG:-1}"
+  print_runtime_summary "$generated_config" "$log_file"
 
   export BOT_CHAT_CONFIG="$generated_config"
+  export BOT_CHAT_TEST_AGENT_LOG_FILE="$log_file"
 
   (
     cd "$PLUGIN_DIR"
+    exec > >(tee -a "$log_file") 2>&1
+    echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] launching test agent"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] BOT_CHAT_CONFIG=$generated_config"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] BOT_CHAT_RUNTIME_DEBUG=$BOT_CHAT_RUNTIME_DEBUG"
     exec npm start
   )
 }

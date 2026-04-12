@@ -83,33 +83,33 @@ type WebSocketConfig struct {
 }
 
 type StorageConfig struct {
-	Provider       string
-	Bucket         string
-	Region         string
-	Endpoint       string
-	PublicBaseURL  string
-	PrivateRead    bool
-	UploadURLTTL   int
-	DownloadURLTTL int
-	KeyPrefix      string
-	COS            COSStorageConfig
-	OSS            OSSStorageConfig
+	Provider       string           `mapstructure:"provider"`
+	Bucket         string           `mapstructure:"bucket"`
+	Region         string           `mapstructure:"region"`
+	Endpoint       string           `mapstructure:"endpoint"`
+	PublicBaseURL  string           `mapstructure:"public_base_url"`
+	PrivateRead    bool             `mapstructure:"private_read"`
+	UploadURLTTL   int              `mapstructure:"upload_url_ttl"`
+	DownloadURLTTL int              `mapstructure:"download_url_ttl"`
+	KeyPrefix      string           `mapstructure:"key_prefix"`
+	COS            COSStorageConfig `mapstructure:"cos"`
+	OSS            OSSStorageConfig `mapstructure:"oss"`
 }
 
 type COSStorageConfig struct {
-	SecretID     string
-	SecretKey    string
-	SessionToken string
+	SecretID     string `mapstructure:"secret_id"`
+	SecretKey    string `mapstructure:"secret_key"`
+	SessionToken string `mapstructure:"session_token"`
 }
 
 type OSSStorageConfig struct {
-	AccessKeyID     string
-	AccessKeySecret string
-	SecurityToken   string
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	AccessKeySecret string `mapstructure:"access_key_secret"`
+	SecurityToken   string `mapstructure:"security_token"`
 }
 
 type AssetConfig struct {
-	MaxImageSizeMB int
+	MaxImageSizeMB int `mapstructure:"max_image_size_mb"`
 }
 
 // LogConfig holds logging settings

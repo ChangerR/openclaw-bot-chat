@@ -59,6 +59,12 @@ go run ./cmd/server
 
 ## API Routes
 
+详细接口文档见仓库根目录：
+
+- `docs/API.md`
+
+这里保留路由总览。
+
 ### Auth
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -122,7 +128,7 @@ MQTT routing only trusts the topic path itself. `bots.mqtt_topic` and `groups.mq
 
 | Topic | Description |
 |-------|-------------|
-| `chat/{senderType}/{senderId}/to/{receiverType}/{receiverId}` | Direct route for `user` / `bot` peers |
+| `chat/dm/{leftType}/{leftId}/{rightType}/{rightId}` | Canonical direct route for `user` / `bot` peers |
 | `chat/group/{groupId}` | Group route |
 
 ## WebSocket Protocol
@@ -133,17 +139,17 @@ Connect as bot: `GET /api/v1/ws` with header `X-Bot-Key: <bot-key>`
 
 **Subscribe:**
 ```json
-{"type": "subscribe", "topic": "chat/bot/xxx/to/bot/yyy"}
+{"type": "subscribe", "topic": "chat/dm/bot/xxx/bot/yyy"}
 ```
 
 **Publish:**
 ```json
-{"type": "publish", "topic": "chat/bot/xxx/to/bot/yyy", "payload": {"from": {"type": "bot", "id": "xxx"}, "to": {"type": "bot", "id": "yyy"}, "content": {"type": "text", "body": "hello"}}}
+{"type": "publish", "topic": "chat/dm/bot/xxx/bot/yyy", "payload": {"from": {"type": "bot", "id": "xxx"}, "to": {"type": "bot", "id": "yyy"}, "content": {"type": "text", "body": "hello"}}}
 ```
 
 **Incoming Message:**
 ```json
-{"type": "message", "topic": "chat/bot/xxx/to/bot/yyy", "payload": {...}}
+{"type": "message", "topic": "chat/dm/bot/xxx/bot/yyy", "payload": {...}}
 ```
 
 ## Bot Key Format

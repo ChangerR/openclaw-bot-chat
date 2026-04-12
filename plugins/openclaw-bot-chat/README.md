@@ -207,6 +207,7 @@ vi ./scripts/test-agent.env
 - 生成插件运行配置 `plugins/openclaw-bot-chat/.test-agent.config.json`
 - 执行 `npm run build`
 - 启动测试 agent
+- 把 runtime 日志同时输出到终端和 `plugins/openclaw-bot-chat/data/test-agent/logs/` 下的时间戳文件
 
 可选环境变量：
 
@@ -215,6 +216,11 @@ vi ./scripts/test-agent.env
 - `OPENAI_COMPAT_TEMPERATURE`
 - `OPENAI_COMPAT_MAX_TOKENS`
 - `OPENAI_COMPAT_EXTRA_HEADERS`：JSON 对象字符串，用于某些兼容服务的额外请求头
+- `BOT_CHAT_RUNTIME_DEBUG`：是否输出详细请求/响应日志，默认 `1`
+- `BOT_CHAT_LOG_BODY_MAX_LEN`：文本预览长度，默认 `600`
+- `BOT_CHAT_LOG_SUMMARY_MAX_LEN`：JSON 摘要长度，默认 `1500`
+- `BOT_CHAT_TEST_AGENT_LOG_DIR`：日志目录
+- `BOT_CHAT_TEST_AGENT_LOG_FILE`：单次运行日志文件
 
 内置调试指令：
 

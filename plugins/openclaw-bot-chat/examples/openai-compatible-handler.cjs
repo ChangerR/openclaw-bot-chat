@@ -6,59 +6,135 @@ const DEFAULT_SYSTEM_PROMPT = [
   "If the user asks what system you are in, explain that you are a test agent connected through Bot Chat.",
 ].join(" ");
 
+const DEBUG_ENABLED = readBooleanEnv("BOT_CHAT_RUNTIME_DEBUG", true);
+const BODY_MAX_LENGTH = readInt("BOT_CHAT_LOG_BODY_MAX_LEN", 600);
+
 exports.respond = async function respond(request) {
+  const startedAt = Date.now();
   const content = String(request && request.content ? request.content : "").trim();
   const metadata = isRecord(request && request.metadata) ? request.metadata : {};
+  const logBase = {
+    session_id: readString(request && request.session_id),
+    dialog_id: readString(metadata.dialog_id),
+    message_id: readString(metadata.message_id),
+  };
+
+  debugLog("handler.request.start", {
+    ...logBase,
+    content_preview: previewText(content),
+    metadata: summarizeValue(metadata),
+  });
 
   if (!content) {
-    return {
+    const response = {
       content: "收到空消息。",
       metadata: { content_type: "text" },
     };
+    debugLog("handler.request.success", {
+      ...logBase,
+      duration_ms: Date.now() - startedAt,
+      response_preview: previewText(response.content),
+    });
+    return response;
   }
 
   if (content === "/ping") {
-    return {
+    const response = {
       content: "pong",
       metadata: { content_type: "text" },
     };
+    debugLog("handler.request.success", {
+      ...logBase,
+      duration_ms: Date.now() - startedAt,
+      response_preview: previewText(response.content),
+    });
+    return response;
   }
 
   if (content === "/meta") {
-    return {
+    const response = {
       content: JSON.stringify(metadata, null, 2),
       metadata: { content_type: "text" },
     };
+    debugLog("handler.request.success", {
+      ...logBase,
+      duration_ms: Date.now() - startedAt,
+      response_preview: previewText(response.content),
+    });
+    return response;
   }
 
   const endpoint = resolveChatCompletionsUrl(requiredEnv("OPENAI_COMPAT_BASE_URL"));
   const apiKey = requiredEnv("OPENAI_COMPAT_API_KEY");
   const model = process.env.OPENAI_COMPAT_MODEL || "gpt-4o-mini";
   const systemPrompt = process.env.OPENAI_COMPAT_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT;
+  const payload = buildPayload(model, systemPrompt, content, metadata);
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: buildHeaders(apiKey),
-    body: JSON.stringify(buildPayload(model, systemPrompt, content, metadata)),
-    signal: AbortSignal.timeout(readInt("OPENAI_COMPAT_TIMEOUT_MS", 60000)),
+  debugLog("handler.model_request.start", {
+    ...logBase,
+    endpoint,
+    model,
+    timeout_ms: readInt("OPENAI_COMPAT_TIMEOUT_MS", 60000),
+    payload: summarizeValue(payload),
   });
 
-  const rawText = await response.text();
-  const parsed = tryParseJson(rawText);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: buildHeaders(apiKey),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(readInt("OPENAI_COMPAT_TIMEOUT_MS", 60000)),
+    });
 
-  if (!response.ok) {
-    throw new Error(`OpenAI-compatible request failed with ${response.status}: ${rawText}`);
+    const rawText = await response.text();
+    const parsed = tryParseJson(rawText);
+
+    if (!response.ok) {
+      errorLog("handler.model_request.failed", {
+        ...logBase,
+        endpoint,
+        model,
+        duration_ms: Date.now() - startedAt,
+        status: response.status,
+        response_body: summarizeValue(parsed !== undefined ? parsed : rawText),
+      });
+      throw new Error(`OpenAI-compatible request failed with ${response.status}: ${rawText}`);
+    }
+
+    const text = extractAssistantText(parsed).trim();
+    if (!text) {
+      errorLog("handler.model_request.empty_response", {
+        ...logBase,
+        endpoint,
+        model,
+        duration_ms: Date.now() - startedAt,
+        response_body: summarizeValue(parsed !== undefined ? parsed : rawText),
+      });
+      throw new Error("OpenAI-compatible response did not contain assistant text");
+    }
+
+    debugLog("handler.model_request.success", {
+      ...logBase,
+      endpoint,
+      model,
+      duration_ms: Date.now() - startedAt,
+      response_preview: previewText(text),
+    });
+
+    return {
+      content: text,
+      metadata: { content_type: "text" },
+    };
+  } catch (error) {
+    errorLog("handler.request.failed", {
+      ...logBase,
+      duration_ms: Date.now() - startedAt,
+      endpoint,
+      model,
+      content_preview: previewText(content),
+    }, error);
+    throw error;
   }
-
-  const text = extractAssistantText(parsed).trim();
-  if (!text) {
-    throw new Error("OpenAI-compatible response did not contain assistant text");
-  }
-
-  return {
-    content: text,
-    metadata: { content_type: "text" },
-  };
 };
 
 function buildHeaders(apiKey) {
@@ -259,6 +335,111 @@ function readFloat(name) {
     throw new Error(`${name} must be a number`);
   }
   return value;
+}
+
+function debugLog(event, fields) {
+  if (!DEBUG_ENABLED) {
+    return;
+  }
+  emitLog("debug", event, fields);
+}
+
+function errorLog(event, fields, error) {
+  emitLog("error", event, fields, error);
+}
+
+function emitLog(level, event, fields, error) {
+  const payload = {
+    ts: new Date().toISOString(),
+    level,
+    event,
+    ...(fields || {}),
+    ...(error ? { error: serializeError(error) } : {}),
+  };
+  const line = `[openclaw-bot-chat:handler] ${safeJsonStringify(payload) || JSON.stringify(payload)}`;
+  if (level === "error") {
+    console.error(line);
+    return;
+  }
+  console.debug(line);
+}
+
+function previewText(value) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.length <= BODY_MAX_LENGTH) {
+    return normalized;
+  }
+  return `${normalized.slice(0, BODY_MAX_LENGTH)}...<truncated>`;
+}
+
+function summarizeValue(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return previewText(value);
+  }
+  const serialized = safeJsonStringify(value);
+  if (!serialized) {
+    return undefined;
+  }
+  if (serialized.length <= BODY_MAX_LENGTH * 2) {
+    return serialized;
+  }
+  return `${serialized.slice(0, BODY_MAX_LENGTH * 2)}...<truncated>`;
+}
+
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+  return {
+    message: typeof error === "string" ? error : safeJsonStringify(error) || String(error),
+  };
+}
+
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function readBooleanEnv(name, fallback) {
+  const raw = process.env[name];
+  if (typeof raw !== "string") {
+    return fallback;
+  }
+  switch (raw.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      return fallback;
+  }
 }
 
 function tryParseJson(value) {

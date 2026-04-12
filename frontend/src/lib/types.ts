@@ -94,6 +94,7 @@ export interface ComposerMessageInput {
   type: 'text' | 'image'
   body?: string
   asset?: Asset
+  meta?: Record<string, unknown>
 }
 
 export interface Message {

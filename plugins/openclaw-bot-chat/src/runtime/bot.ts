@@ -7,6 +7,12 @@ import {
 } from "../config";
 import { BotChatHttpClient, BotChatHttpError } from "../client/http";
 import {
+  createRuntimeLogger,
+  isRuntimeDebugEnabled,
+  previewText,
+  summarizeValue,
+} from "../logger";
+import {
   BotChatWebSocketClient,
   MultiBotWebSocketClient,
 } from "../client/websocket";
@@ -82,6 +88,7 @@ class ManagedBotRuntime {
   private readonly checkpointStore: CheckpointStore;
   private readonly channelState = new ChannelState();
   private readonly httpClient: BotChatHttpClient;
+  private readonly logger: ReturnType<typeof createRuntimeLogger>;
   private readonly sessionManager: SessionManager;
   private readonly wsClient: BotChatWebSocketClient;
 
@@ -103,6 +110,7 @@ class ManagedBotRuntime {
       config.stateDir,
       sanitizeStateKey(botConfig.key),
     );
+    this.logger = createRuntimeLogger(this.logPrefix());
 
     this.httpClient = new BotChatHttpClient(
       config.botChatBaseUrl,
@@ -121,9 +129,13 @@ class ManagedBotRuntime {
       reconnectBaseDelayMs: config.reconnectBaseDelayMs,
       reconnectMaxDelayMs: config.reconnectMaxDelayMs,
       onError: (error) => {
-        console.error(`${this.logPrefix()} websocket error:`, error.message);
+        this.logger.error("websocket.error", undefined, error);
       },
       onHello: () => {
+        this.logger.info("websocket.hello", {
+          sessionId: this.wsClient.getSessionId(),
+          heartbeatIntervalMs: this.wsClient.getHeartbeatIntervalMs(),
+        });
         this.scheduleHeartbeat();
       },
       onMessage: async (frame) => {
@@ -133,13 +145,24 @@ class ManagedBotRuntime {
         }
       },
       onReconnect: async () => {
+        this.logger.warn("websocket.reconnected", {
+          sessionId: this.wsClient.getSessionId(),
+        });
         await this.recoverPendingMessages();
+      },
+      onStateChange: (state) => {
+        this.logger.info("websocket.state_changed", { state });
       },
     });
   }
 
   async start(): Promise<void> {
     this.stopped = false;
+    this.logger.info("runtime.starting", {
+      serviceUrl: this.config.botChatBaseUrl,
+      stateDir: this.config.stateDir,
+      botId: this.botConfig.id,
+    });
     await this.sessionManager.load();
     await this.checkpointStore.load();
 
@@ -164,6 +187,14 @@ class ManagedBotRuntime {
       this.bootstrap.dialogs,
       this.bootstrap.transport_policy,
     );
+    this.logger.info("runtime.bootstrap.loaded", {
+      resolvedBotId: this.botId,
+      groups: this.bootstrap.groups.length,
+      dialogs: this.bootstrap.dialogs.length,
+      subscriptions: this.bootstrap.subscriptions.length,
+      checkpoints: this.bootstrap.checkpoints.length,
+      topics: topics.length,
+    });
     for (const topic of topics) {
       this.wsClient.subscribe(topic);
     }
@@ -171,6 +202,10 @@ class ManagedBotRuntime {
     await this.wsClient.connect();
     this.scheduleHeartbeat();
     await this.recoverPendingMessages();
+    this.logger.info("runtime.started", {
+      resolvedBotId: this.botId,
+      sessionId: this.wsClient.getSessionId(),
+    });
   }
 
   async stop(): Promise<void> {
@@ -187,6 +222,10 @@ class ManagedBotRuntime {
     await this.checkpointStore.flush();
     await this.sessionManager.flush();
     await this.wsClient.close();
+    this.logger.info("runtime.stopped", {
+      resolvedBotId: this.botId,
+      sessionId: this.wsClient.getSessionId(),
+    });
   }
 
   private async loadBootstrap(): Promise<BootstrapResponse> {
@@ -243,60 +282,120 @@ class ManagedBotRuntime {
   }
 
   private async handleIncomingMessage(message: BotChatMessage): Promise<void> {
-    if (!this.botId || !shouldProcessMessage(message, this.botId)) {
+    if (!this.botId) {
+      this.logger.warn("message.skipped.no_bot_id", {
+        messageId: message.message_id,
+        dialogId: message.dialog_id,
+      });
+      return;
+    }
+    if (!shouldProcessMessage(message, this.botId)) {
+      if (isRuntimeDebugEnabled()) {
+        this.logger.debug("message.skipped.filtered", this.summarizeIncomingMessage(message));
+      }
       return;
     }
     if (this.isMessageProcessed(message.message_id)) {
+      if (isRuntimeDebugEnabled()) {
+        this.logger.debug("message.skipped.duplicate", this.summarizeIncomingMessage(message));
+      }
       return;
     }
 
     const routed = routeIncomingMessage(message, this.botId, this.botConfig);
     const queueKey = `${buildChannelScopeKey(routed.channel)}::${message.dialog_id}`;
 
+    this.logger.debug("message.received", {
+      ...this.summarizeIncomingMessage(message),
+      action: routed.action,
+      queueKey,
+      permissionAllowed: routed.permission.allowed,
+    });
+
     await this.enqueueByDialog(queueKey, async () => {
-      const botId = this.botId;
-      if (!botId || this.isMessageProcessed(message.message_id)) {
-        return;
-      }
+      const startedAt = Date.now();
+      try {
+        const botId = this.botId;
+        if (!botId || this.isMessageProcessed(message.message_id)) {
+          return;
+        }
 
-      this.trackDialog(buildDialogInfo(message), botId, routed.channel);
-      const checkpoint =
-        this.channelState.getCheckpoint(routed.channel, message.dialog_id) ??
-        this.checkpointStore.get(message.dialog_id);
+        this.trackDialog(buildDialogInfo(message), botId, routed.channel);
+        const checkpoint =
+          this.channelState.getCheckpoint(routed.channel, message.dialog_id) ??
+          this.checkpointStore.get(message.dialog_id);
 
-      if (!routed.permission.allowed) {
-        this.logPermissionDenied(routed.permission, routed.channel, message);
-        const existingSessionId =
+        if (!routed.permission.allowed) {
+          this.logPermissionDenied(routed.permission, routed.channel, message);
+          const existingSessionId =
+            this.channelState.getSession(routed.channel, message.dialog_id) ??
+            this.sessionManager.get(message.dialog_id) ??
+            checkpoint?.session_id;
+          await this.saveCheckpoint(message, existingSessionId, routed.channel);
+          this.markMessageProcessed(message.message_id);
+          return;
+        }
+
+        const sessionId =
           this.channelState.getSession(routed.channel, message.dialog_id) ??
-          this.sessionManager.get(message.dialog_id) ??
-          checkpoint?.session_id;
-        await this.saveCheckpoint(message, existingSessionId, routed.channel);
-        this.markMessageProcessed(message.message_id);
-        return;
-      }
-
-      const sessionId =
-        this.channelState.getSession(routed.channel, message.dialog_id) ??
-        (await this.sessionManager.getOrCreate(
+          (await this.sessionManager.getOrCreate(
+            message.dialog_id,
+            checkpoint?.session_id,
+          ));
+        this.channelState.setSession(
+          routed.channel,
           message.dialog_id,
-          checkpoint?.session_id,
-        ));
-      this.channelState.setSession(
-        routed.channel,
-        message.dialog_id,
-        sessionId,
-      );
+          sessionId,
+        );
 
-      const request = toOpenClawRequest(message, sessionId, routed.channel);
-      const response = await this.agent.respond(request);
-      const outgoing = toBotChatOutgoingMessage(response, message, botId);
+        const request = toOpenClawRequest(message, sessionId, routed.channel);
+        this.logger.debug("agent.request.prepared", {
+          ...this.summarizeIncomingMessage(message),
+          sessionId,
+          requestMetadata: summarizeValue(request.metadata),
+        });
 
-      if (outgoing) {
-        await this.dispatchReply(outgoing, message, botId);
+        const response = await this.agent.respond(request);
+        const outgoing = toBotChatOutgoingMessage(response, message, botId);
+
+        this.logger.debug("agent.response.received", {
+          messageId: message.message_id,
+          dialogId: message.dialog_id,
+          sessionId,
+          responsePreview: previewText(response.content),
+          responseMetadata: summarizeValue(response.metadata),
+          hasOutgoingMessage: Boolean(outgoing),
+        });
+
+        if (outgoing) {
+          await this.dispatchReply(outgoing, message, botId);
+        } else {
+          this.logger.warn("reply.skipped.empty", {
+            messageId: message.message_id,
+            dialogId: message.dialog_id,
+            sessionId,
+          });
+        }
+
+        await this.saveCheckpoint(message, sessionId, routed.channel);
+        this.markMessageProcessed(message.message_id);
+        this.logger.info("message.processed", {
+          ...this.summarizeIncomingMessage(message),
+          sessionId,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (error) {
+        this.logger.error(
+          "message.processing_failed",
+          {
+            ...this.summarizeIncomingMessage(message),
+            queueKey,
+            durationMs: Date.now() - startedAt,
+          },
+          error,
+        );
+        throw error;
       }
-
-      await this.saveCheckpoint(message, sessionId, routed.channel);
-      this.markMessageProcessed(message.message_id);
     });
   }
 
@@ -305,8 +404,24 @@ class ManagedBotRuntime {
     sourceMessage: BotChatMessage,
     botId: string,
   ): Promise<void> {
+    const startedAt = Date.now();
+    this.logger.debug("reply.dispatch.start", {
+      sourceMessageId: sourceMessage.message_id,
+      dialogId: sourceMessage.dialog_id,
+      replyMessageId: outgoing.message_id,
+      topic: outgoing.topic,
+      contentType: outgoing.content_type,
+      bodyPreview: previewText(outgoing.body),
+    });
+
     try {
       await this.httpClient.sendMessage(outgoing);
+      this.logger.info("reply.dispatch.http_success", {
+        sourceMessageId: sourceMessage.message_id,
+        dialogId: sourceMessage.dialog_id,
+        replyMessageId: outgoing.message_id,
+        durationMs: Date.now() - startedAt,
+      });
       return;
     } catch (error) {
       const shouldFallback =
@@ -314,8 +429,32 @@ class ManagedBotRuntime {
         (error.status === 404 || error.status === 405 || error.status >= 500);
 
       if (!shouldFallback) {
+        this.logger.error(
+          "reply.dispatch.http_failed",
+          {
+            sourceMessageId: sourceMessage.message_id,
+            dialogId: sourceMessage.dialog_id,
+            replyMessageId: outgoing.message_id,
+            durationMs: Date.now() - startedAt,
+            status: error instanceof BotChatHttpError ? error.status : undefined,
+            responseBody:
+              error instanceof BotChatHttpError
+                ? summarizeValue(error.responseBody)
+                : undefined,
+          },
+          error,
+        );
         throw error;
       }
+
+      this.logger.warn("reply.dispatch.http_fallback", {
+        sourceMessageId: sourceMessage.message_id,
+        dialogId: sourceMessage.dialog_id,
+        replyMessageId: outgoing.message_id,
+        durationMs: Date.now() - startedAt,
+        status: error.status,
+        responseBody: summarizeValue(error.responseBody),
+      });
     }
 
     const publishFrame = toRealtimePublishPayload(
@@ -328,6 +467,13 @@ class ManagedBotRuntime {
       publishFrame.payload,
       outgoing.message_id,
     );
+    this.logger.info("reply.dispatch.ws_publish", {
+      sourceMessageId: sourceMessage.message_id,
+      dialogId: sourceMessage.dialog_id,
+      replyMessageId: outgoing.message_id,
+      topic: publishFrame.topic,
+      durationMs: Date.now() - startedAt,
+    });
   }
 
   private async recoverPendingMessages(): Promise<void> {
@@ -340,9 +486,15 @@ class ManagedBotRuntime {
       dialogIds.add(checkpoint.dialog_id);
     }
 
+    this.logger.info("recovery.start", {
+      dialogs: dialogIds.size,
+    });
     for (const dialogId of dialogIds) {
       await this.recoverDialog(dialogId);
     }
+    this.logger.info("recovery.complete", {
+      dialogs: dialogIds.size,
+    });
   }
 
   private async recoverDialog(dialogId: string): Promise<void> {
@@ -384,6 +536,16 @@ class ManagedBotRuntime {
         return left.timestamp - right.timestamp;
       });
 
+    if (messages.length > 0 || isRuntimeDebugEnabled()) {
+      this.logger.debug("recovery.dialog_messages", {
+        dialogId,
+        fetched: rawMessages.length,
+        replaying: messages.length,
+        checkpointSeq: checkpoint?.last_seq,
+        checkpointMessageId: checkpoint?.last_message_id,
+      });
+    }
+
     for (const message of messages) {
       await this.handleIncomingMessage(message);
     }
@@ -408,6 +570,15 @@ class ManagedBotRuntime {
       this.channelState.setSession(channel, message.dialog_id, sessionId);
       await this.sessionManager.set(message.dialog_id, sessionId);
     }
+
+    this.logger.debug("checkpoint.saved", {
+      dialogId: message.dialog_id,
+      messageId: message.message_id,
+      sessionId,
+      seq: message.seq,
+      channelId: channel.id,
+      channelType: channel.type,
+    });
   }
 
   private scheduleHeartbeat(): void {
@@ -438,13 +609,25 @@ class ManagedBotRuntime {
           checkpoints: this.checkpointStore.values(),
           timestamp: Date.now(),
         });
+        // if (isRuntimeDebugEnabled()) {
+        //   this.logger.debug("heartbeat.sent", {
+        //     botId: this.botId,
+        //     sessionId: this.wsClient.getSessionId(),
+        //     subscriptions: this.wsClient.getSubscribedTopics().length,
+        //     checkpoints: this.checkpointStore.values().length,
+        //   });
+        // }
       } catch (error) {
         if (error instanceof BotChatHttpError && error.status === 404) {
           return;
         }
-        console.error(
-          `${this.logPrefix()} heartbeat failed:`,
-          toError(error).message,
+        this.logger.error(
+          "heartbeat.failed",
+          {
+            botId: this.botId,
+            sessionId: this.wsClient.getSessionId(),
+          },
+          error,
         );
       }
     };
@@ -515,22 +698,39 @@ class ManagedBotRuntime {
     channel: ChannelContext,
     message: BotChatMessage,
   ): void {
-    console.warn(
-      `${this.logPrefix()} inbound permission denied: ${JSON.stringify({
-        code: permission.code ?? "PERMISSION_DENIED",
-        reason: permission.reason ?? "permission denied",
-        required: permission.required ?? [],
-        botId: this.botId,
-        dialogId: message.dialog_id,
-        channelId: channel.id,
-        channelType: channel.type,
-        userId: message.from_id,
-      })}`,
-    );
+    this.logger.warn("message.permission_denied", {
+      code: permission.code ?? "PERMISSION_DENIED",
+      reason: permission.reason ?? "permission denied",
+      required: permission.required ?? [],
+      botId: this.botId,
+      dialogId: message.dialog_id,
+      messageId: message.message_id,
+      channelId: channel.id,
+      channelType: channel.type,
+      userId: message.from_id,
+    });
   }
 
   private logPrefix(): string {
     return `[openclaw-bot-chat:${this.botConfig.key}]`;
+  }
+
+  private summarizeIncomingMessage(
+    message: BotChatMessage,
+  ): Record<string, unknown> {
+    return {
+      messageId: message.message_id,
+      dialogId: message.dialog_id,
+      fromType: message.from_type,
+      fromId: message.from_id,
+      toType: message.to_type,
+      toId: message.to_id,
+      contentType: message.content_type,
+      seq: message.seq,
+      timestamp: message.timestamp,
+      bodyPreview: previewText(message.body),
+      metadata: summarizeValue(message.meta),
+    };
   }
 }
 
@@ -551,8 +751,4 @@ function sanitizeStateKey(value: string): string {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
 }

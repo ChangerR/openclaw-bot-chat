@@ -96,6 +96,10 @@ func (s *MessageService) CanUserPublishTopic(ctx context.Context, userID uuid.UU
 }
 
 func (s *MessageService) CanBotSubscribeTopic(ctx context.Context, botID uuid.UUID, topic string) error {
+	if isBotWildcardSubscriptionTopic(botID, topic) {
+		return nil
+	}
+
 	route := parseMessageRoute(topic)
 
 	switch {
@@ -118,6 +122,25 @@ func (s *MessageService) CanBotSubscribeTopic(ctx context.Context, botID uuid.UU
 		return nil
 	default:
 		return ErrTopicAccessDenied
+	}
+}
+
+func isBotWildcardSubscriptionTopic(botID uuid.UUID, topic string) bool {
+	parts := splitMessageTopic(NormalizeConversationReference(topic))
+	if len(parts) != 6 || parts[0] != "chat" || parts[1] != "dm" {
+		return false
+	}
+
+	bot := botID.String()
+	switch {
+	case parts[2] == "user" && parts[3] == "+" && parts[4] == "bot" && parts[5] == bot:
+		return true
+	case parts[2] == "bot" && parts[3] == bot && parts[4] == "bot" && parts[5] == "+":
+		return true
+	case parts[2] == "bot" && parts[3] == "+" && parts[4] == "bot" && parts[5] == bot:
+		return true
+	default:
+		return false
 	}
 }
 

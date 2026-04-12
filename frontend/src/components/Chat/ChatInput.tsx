@@ -3,13 +3,19 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Avatar } from '@/components/Avatar'
 import { useChat } from '@/contexts/ChatContext'
-import { assetsApi } from '@/lib/api'
-import { Bot, ComposerMessageInput } from '@/lib/types'
+import { assetsApi, groupsApi } from '@/lib/api'
+import { Bot, ComposerMessageInput, GroupMember } from '@/lib/types'
 
 interface ChatInputProps {
   onSendMessage: (input: ComposerMessageInput) => Promise<void>
   disabled?: boolean
   placeholder?: string
+}
+
+interface MentionBot {
+  id: string
+  name: string
+  avatar?: string | null
 }
 
 export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a message...' }: ChatInputProps) {
@@ -24,8 +30,11 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   const [mentionQuery, setMentionQuery] = useState('')
   const [mentionStartIndex, setMentionStartIndex] = useState(-1)
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [groupBots, setGroupBots] = useState<MentionBot[]>([])
 
-  const filteredBots = bots.filter((bot) =>
+  const mentionBots = currentConversation?.target.type === 'group' ? groupBots : bots
+
+  const filteredBots = mentionBots.filter((bot) =>
     bot.name.toLowerCase().includes(mentionQuery.toLowerCase())
   )
 
@@ -50,12 +59,48 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
     setSelectedIndex(0)
   }, [mentionQuery])
 
+  useEffect(() => {
+    if (currentConversation?.target.type !== 'group') {
+      setGroupBots([])
+      return
+    }
+
+    let cancelled = false
+
+    const loadGroupBots = async () => {
+      try {
+        const data = await groupsApi.getMembers(currentConversation.target.id)
+        if (cancelled) return
+        setGroupBots(
+          (data.bots || [])
+            .map(toMentionBot)
+            .filter((bot): bot is MentionBot => bot !== null),
+        )
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to load group bots:', error)
+          setGroupBots([])
+        }
+      }
+    }
+
+    void loadGroupBots()
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentConversation])
+
   const handleSend = async () => {
     if (!content.trim() || isSending || isUploading || disabled) return
     
     setIsSending(true)
     try {
-      await onSendMessage({ type: 'text', body: content.trim() })
+      await onSendMessage({
+        type: 'text',
+        body: content.trim(),
+        meta: buildMentionMeta(content, mentionBots),
+      })
       setContent('')
       setMentionActive(false)
     } catch (error) {
@@ -100,6 +145,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
         type: 'image',
         body: content.trim() || file.name,
         asset,
+        meta: buildMentionMeta(content, mentionBots),
       })
       setContent('')
       setMentionActive(false)
@@ -193,7 +239,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
       return <span className="text-slate-400">{placeholder}</span>;
     }
     
-    const escapedMentions = bots
+    const escapedMentions = mentionBots
       .map(m => m.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
       .sort((a, b) => b.length - a.length)
       .join('|');
@@ -329,4 +375,80 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
       </div>
     </div>
   )
+}
+
+function toMentionBot(member: GroupMember): MentionBot | null {
+  const id = member.bot_id || member.bot?.id
+  const name = member.bot?.name
+  if (!id || !name) {
+    return null
+  }
+  return {
+    id,
+    name,
+    avatar: member.bot?.avatar || member.bot?.avatar_url || null,
+  }
+}
+
+function buildMentionMeta(
+  body: string,
+  bots: Array<Pick<MentionBot, 'id' | 'name'>>,
+): Record<string, unknown> {
+  const mentionedBotIds = extractMentionedBotIds(body, bots)
+  return mentionedBotIds.length > 0 ? { mentioned_bot_ids: mentionedBotIds } : {}
+}
+
+function extractMentionedBotIds(
+  body: string,
+  bots: Array<Pick<MentionBot, 'id' | 'name'>>,
+): string[] {
+  const text = body.trim()
+  if (!text || bots.length === 0) {
+    return []
+  }
+
+  const candidates = bots
+    .map((bot) => ({ id: bot.id, name: bot.name.trim() }))
+    .filter((bot) => bot.name.length > 0)
+    .sort((left, right) => right.name.length - left.name.length)
+
+  const mentioned = new Set<string>()
+
+  for (let index = 0; index < text.length; ) {
+    const char = text[index]
+    if (char !== '@' && char !== '＠') {
+      index += 1
+      continue
+    }
+
+    const remaining = text.slice(index + 1)
+    let matched = false
+
+    for (const bot of candidates) {
+      if (!remaining.startsWith(bot.name)) {
+        continue
+      }
+      if (!hasMentionBoundary(remaining.slice(bot.name.length))) {
+        continue
+      }
+      mentioned.add(bot.id)
+      index += 1 + bot.name.length
+      matched = true
+      break
+    }
+
+    if (!matched) {
+      index += 1
+    }
+  }
+
+  return [...mentioned]
+}
+
+function hasMentionBoundary(remaining: string): boolean {
+  if (!remaining) {
+    return true
+  }
+
+  return /[\s\p{P}\p{S}]/u.test(remaining[0] || '')
 }

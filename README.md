@@ -6,6 +6,21 @@
 - `frontend/`: Next.js 管理端 / 聊天界面
 - `plugins/openclaw-bot-chat/`: OpenClaw 侧运行插件
 
+## API 文档
+
+当前 API 文档已单独维护在：
+
+- `docs/API.md`
+
+这份文档覆盖：
+
+- 用户 HTTP API
+- bot runtime HTTP API
+- WebSocket 接入方式
+- 会话 topic / conversation id 规则
+
+如果后续改动了路由、请求体或响应字段，优先同步更新 `docs/API.md`。
+
 ## 推荐部署方式
 
 核心服务推荐直接用 Docker Compose 部署。当前仓库已经补齐了前端生产镜像，启动后会拉起：
@@ -219,6 +234,7 @@ vi ./scripts/test-agent.env
 ```
 
 脚本会自动生成插件配置、执行构建并启动测试 agent。
+启动时会同时把 runtime 日志写到 `plugins/openclaw-bot-chat/data/test-agent/logs/` 下的时间戳日志文件，并继续输出到当前终端。
 
 `./scripts/test-agent.env` 里最关键的是：
 
@@ -235,6 +251,14 @@ vi ./scripts/test-agent.env
 ./scripts/test-agent.sh check
 ./scripts/test-agent.sh print-config
 ```
+
+常用调试环境变量：
+
+- `BOT_CHAT_RUNTIME_DEBUG=1`：打开更详细的消息/请求/回复日志
+- `BOT_CHAT_LOG_BODY_MAX_LEN=600`：限制消息内容预览长度
+- `BOT_CHAT_LOG_SUMMARY_MAX_LEN=1500`：限制 JSON 摘要长度
+- `BOT_CHAT_TEST_AGENT_LOG_DIR=...`：指定日志目录
+- `BOT_CHAT_TEST_AGENT_LOG_FILE=...`：指定单次运行的日志文件
 
 如果你不想走脚本，也可以手动启动插件：
 
