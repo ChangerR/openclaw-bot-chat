@@ -10,15 +10,14 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	App       AppConfig
-	Database  DatabaseConfig
-	Redis     RedisConfig
-	MQTT      MQTTConfig
-	JWT       JWTConfig
-	WebSocket WebSocketConfig
-	Storage   StorageConfig
-	Asset     AssetConfig
-	Log       LogConfig
+	App      AppConfig
+	Database DatabaseConfig
+	Redis    RedisConfig
+	MQTT     MQTTConfig
+	JWT      JWTConfig
+	Storage  StorageConfig
+	Asset    AssetConfig
+	Log      LogConfig
 }
 
 // AppConfig holds application-level settings
@@ -52,14 +51,24 @@ type RedisConfig struct {
 
 // MQTTConfig holds MQTT broker settings
 type MQTTConfig struct {
-	Broker         string
-	ClientID       string
-	Username       string
-	Password       string
-	TopicPrefix    string
-	QOS            byte
-	AutoReconnect  bool
-	ReconnectDelay int // seconds
+	Broker         string `mapstructure:"broker"`
+	ClientID       string `mapstructure:"client_id"`
+	Username       string `mapstructure:"username"`
+	Password       string `mapstructure:"password"`
+	TopicPrefix    string `mapstructure:"topic_prefix"`
+	QOS            byte   `mapstructure:"qos"`
+	AutoReconnect  bool   `mapstructure:"auto_reconnect"`
+	ReconnectDelay int    `mapstructure:"reconnect_delay"`
+	TCPPublicURL   string `mapstructure:"tcp_public_url"`
+	WSPublicURL    string `mapstructure:"ws_public_url"`
+}
+
+type BrokerClientConfig struct {
+	TCPPublicURL string `json:"tcp_url"`
+	WSPublicURL  string `json:"ws_url"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	QOS          int    `json:"qos"`
 }
 
 // JWTConfig holds JWT settings
@@ -68,18 +77,6 @@ type JWTConfig struct {
 	AccessTokenTTL  int // seconds
 	RefreshTokenTTL int // seconds
 	Issuer          string
-}
-
-// WebSocketConfig holds WebSocket settings
-type WebSocketConfig struct {
-	ReadBufferSize     int
-	WriteBufferSize    int
-	PingInterval       int   // seconds
-	PongTimeout        int   // seconds
-	WriteTimeout       int   // seconds
-	MaxMessageSize     int64 // bytes
-	SendQueueSize      int
-	BroadcastQueueSize int
 }
 
 type StorageConfig struct {
@@ -166,18 +163,12 @@ func Load(configPath string) (*Config, error) {
 		"mqtt.qos",
 		"mqtt.auto_reconnect",
 		"mqtt.reconnect_delay",
+		"mqtt.tcp_public_url",
+		"mqtt.ws_public_url",
 		"jwt.secret",
 		"jwt.access_token_ttl",
 		"jwt.refresh_token_ttl",
 		"jwt.issuer",
-		"websocket.read_buffer_size",
-		"websocket.write_buffer_size",
-		"websocket.ping_interval",
-		"websocket.pong_timeout",
-		"websocket.write_timeout",
-		"websocket.max_message_size",
-		"websocket.send_queue_size",
-		"websocket.broadcast_queue_size",
 		"storage.provider",
 		"storage.bucket",
 		"storage.region",
@@ -229,35 +220,20 @@ func Load(configPath string) (*Config, error) {
 	if cfg.MQTT.TopicPrefix == "" {
 		cfg.MQTT.TopicPrefix = "chat"
 	}
+	if cfg.MQTT.QOS == 0 {
+		cfg.MQTT.QOS = 1
+	}
+	if cfg.MQTT.TCPPublicURL == "" {
+		cfg.MQTT.TCPPublicURL = "mqtt://127.0.0.1:1883"
+	}
+	if cfg.MQTT.WSPublicURL == "" {
+		cfg.MQTT.WSPublicURL = "ws://127.0.0.1:8083/mqtt"
+	}
 	if cfg.JWT.AccessTokenTTL == 0 {
 		cfg.JWT.AccessTokenTTL = 7200
 	}
 	if cfg.JWT.RefreshTokenTTL == 0 {
 		cfg.JWT.RefreshTokenTTL = 604800
-	}
-	if cfg.WebSocket.PingInterval == 0 {
-		cfg.WebSocket.PingInterval = 30
-	}
-	if cfg.WebSocket.PongTimeout == 0 {
-		cfg.WebSocket.PongTimeout = 60
-	}
-	if cfg.WebSocket.WriteTimeout == 0 {
-		cfg.WebSocket.WriteTimeout = 10
-	}
-	if cfg.WebSocket.MaxMessageSize == 0 {
-		cfg.WebSocket.MaxMessageSize = 65536
-	}
-	if cfg.WebSocket.ReadBufferSize == 0 {
-		cfg.WebSocket.ReadBufferSize = 1024
-	}
-	if cfg.WebSocket.WriteBufferSize == 0 {
-		cfg.WebSocket.WriteBufferSize = 1024
-	}
-	if cfg.WebSocket.SendQueueSize == 0 {
-		cfg.WebSocket.SendQueueSize = 256
-	}
-	if cfg.WebSocket.BroadcastQueueSize == 0 {
-		cfg.WebSocket.BroadcastQueueSize = 256
 	}
 	if cfg.Storage.UploadURLTTL == 0 {
 		cfg.Storage.UploadURLTTL = 900

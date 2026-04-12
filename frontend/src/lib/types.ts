@@ -2,7 +2,7 @@
 
 export type ChatPeerType = 'user' | 'bot' | 'group' | 'system'
 export type ConversationType = 'bot' | 'group'
-export type WsConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
+export type RealtimeConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
 
 export interface User {
   id: string
@@ -202,66 +202,46 @@ export interface ConversationApiResponse {
   unread_count?: number
 }
 
-export interface WsPublishPayload {
-  id?: string
-  message_id?: string
-  from: { type: 'bot' | 'user'; id: string }
-  to: { type: 'bot' | 'user' | 'group'; id: string }
+export interface RealtimeSubscription {
+  topic: string
+  qos?: number
+}
+
+export interface RealtimeBootstrapResponse {
+  broker: {
+    tcp_url: string
+    ws_url: string
+    username?: string
+    password?: string
+    qos?: number
+  }
+  client_id: string
+  principal_type: 'user' | 'bot'
+  principal_id: string
+  subscriptions: RealtimeSubscription[]
+  publish_topics: string[]
+  history?: {
+    max_catchup_batch?: number
+  }
+}
+
+export interface RealtimeMessagePayload {
+  id: string
+  topic: string
+  conversation_id: string
+  timestamp: number
+  seq?: number
+  created_at?: string
+  from: {
+    type: 'user' | 'bot'
+    id: string
+  }
+  to: {
+    type: 'user' | 'bot' | 'group'
+    id: string
+  }
   content: MessageContent
 }
-
-export interface WsPublishFrame {
-  type: 'publish'
-  id: string
-  topic: string
-  payload: WsPublishPayload
-}
-
-export interface WsSubscribeFrame {
-  type: 'subscribe' | 'unsubscribe'
-  id: string
-  topic: string
-}
-
-export interface WsPingFrame {
-  type: 'ping'
-  id: string
-}
-
-export interface WsIncomingMessage {
-  type: 'message'
-  topic: string
-  payload: {
-    id?: string
-    message_id?: string
-    from?: ChatPeer
-    to?: ChatPeer
-    content: MessageContent
-    timestamp?: number
-    created_at?: string
-    seq?: number
-  }
-  id?: string
-}
-
-export interface WsAckFrame {
-  type: 'ack'
-  id?: string
-  payload?: unknown
-}
-
-export interface WsErrorFrame {
-  type: 'error'
-  id?: string
-  error: string
-}
-
-export interface WsPongFrame {
-  type: 'pong'
-  id?: string
-}
-
-export type WsServerFrame = WsIncomingMessage | WsAckFrame | WsErrorFrame | WsPongFrame
 
 export interface AuthTokens {
   access_token: string

@@ -13,6 +13,7 @@ usage() {
   cat <<EOF
 Usage:
   ./scripts/test-agent.sh start
+  ./scripts/test-agent.sh stop
   ./scripts/test-agent.sh check
   ./scripts/test-agent.sh print-config
 
@@ -79,6 +80,29 @@ require_env_value() {
   printf '%s\n' "$value"
 }
 
+assign_required_env() {
+  local __var_name="$1"
+  local primary="$2"
+  local fallback="${3:-}"
+  local value
+
+  if ! value="$(read_env_value "$primary" "$fallback")"; then
+    if [[ -n "$fallback" ]]; then
+      die "$primary or $fallback is required"
+    fi
+    die "$primary is required"
+  fi
+
+  if [[ -z "${value//[[:space:]]/}" ]]; then
+    if [[ -n "$fallback" ]]; then
+      die "$primary or $fallback is required"
+    fi
+    die "$primary is required"
+  fi
+
+  printf -v "$__var_name" '%s' "$value"
+}
+
 resolve_path() {
   local raw="$1"
   if [[ "$raw" == /* ]]; then
@@ -108,17 +132,26 @@ prepare_log_file() {
   printf '%s\n' "$log_file"
 }
 
+lock_file_path() {
+  local state_dir
+  state_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_STATE_DIR:-plugins/openclaw-bot-chat/data/test-agent}")"
+  mkdir -p "$state_dir"
+  printf '%s\n' "$state_dir/.runtime.lock"
+}
+
 write_generated_config() {
-  local bot_chat_base_url
-  local bot_chat_access_key
+  local bot_chat_backend_url
+  local bot_chat_bot_key
   local bot_chat_bot_id
+  local bot_chat_mqtt_tcp_url
   local handler_path
   local state_dir
   local generated_config
 
-  bot_chat_base_url="$(require_env_value BOT_CHAT_BASE_URL)"
-  bot_chat_access_key="$(require_env_value BOT_CHAT_ACCESS_KEY ACCESS_KEY)"
-  bot_chat_bot_id="$(read_env_value BOT_CHAT_BOT_ID BOT_ID || true)"
+  assign_required_env bot_chat_backend_url BOT_CHAT_BACKEND_URL
+  assign_required_env bot_chat_bot_key BOT_CHAT_BOT_KEY
+  bot_chat_bot_id="$(read_env_value BOT_CHAT_BOT_ID || true)"
+  bot_chat_mqtt_tcp_url="$(read_env_value BOT_CHAT_MQTT_TCP_URL || true)"
 
   handler_path="$(resolve_path "${BOT_CHAT_TEST_AGENT_HANDLER:-plugins/openclaw-bot-chat/examples/openai-compatible-handler.cjs}")"
   state_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_STATE_DIR:-plugins/openclaw-bot-chat/data/test-agent}")"
@@ -126,9 +159,10 @@ write_generated_config() {
 
   mkdir -p "$(dirname -- "$generated_config")" "$state_dir"
 
-  BOT_CHAT_BASE_URL="$bot_chat_base_url" \
-  BOT_CHAT_ACCESS_KEY="$bot_chat_access_key" \
+  BOT_CHAT_BACKEND_URL="$bot_chat_backend_url" \
+  BOT_CHAT_BOT_KEY="$bot_chat_bot_key" \
   BOT_CHAT_BOT_ID="$bot_chat_bot_id" \
+  BOT_CHAT_MQTT_TCP_URL="$bot_chat_mqtt_tcp_url" \
   BOT_CHAT_TEST_AGENT_HANDLER="$handler_path" \
   BOT_CHAT_TEST_AGENT_STATE_DIR="$state_dir" \
   BOT_CHAT_TEST_AGENT_CONFIG="$generated_config" \
@@ -157,17 +191,17 @@ function readInt(name, fallback) {
 
 const botKey = readString("BOT_CHAT_TEST_AGENT_KEY", "test-bot");
 const config = {
-  botChatBaseUrl: readString("BOT_CHAT_BASE_URL"),
+  botChatBaseUrl: readString("BOT_CHAT_BACKEND_URL"),
+  mqttTcpUrl: readString("BOT_CHAT_MQTT_TCP_URL"),
   openClawAgentHandler: readString("BOT_CHAT_TEST_AGENT_HANDLER"),
   defaultBot: botKey,
-  heartbeatIntervalMs: readInt("BOT_CHAT_HEARTBEAT_INTERVAL_MS", 15000),
   httpTimeoutMs: readInt("BOT_CHAT_HTTP_TIMEOUT_MS", 15000),
   reconnectBaseDelayMs: readInt("BOT_CHAT_RECONNECT_BASE_MS", 1000),
   reconnectMaxDelayMs: readInt("BOT_CHAT_RECONNECT_MAX_MS", 30000),
   stateDir: readString("BOT_CHAT_TEST_AGENT_STATE_DIR"),
   bots: {
     [botKey]: {
-      accessKey: readString("BOT_CHAT_ACCESS_KEY"),
+      accessKey: readString("BOT_CHAT_BOT_KEY"),
       enabled: true,
     },
   },
@@ -214,23 +248,27 @@ build_plugin() {
 print_runtime_summary() {
   local generated_config="$1"
   local log_file="$2"
-  local bot_chat_base_url
-  local bot_chat_access_key
+  local bot_chat_backend_url
+  local bot_chat_bot_key
   local bot_chat_bot_id
+  local bot_chat_mqtt_tcp_url
 
-  bot_chat_base_url="$(require_env_value BOT_CHAT_BASE_URL)"
-  bot_chat_access_key="$(require_env_value BOT_CHAT_ACCESS_KEY ACCESS_KEY)"
-  bot_chat_bot_id="$(read_env_value BOT_CHAT_BOT_ID BOT_ID || true)"
+  assign_required_env bot_chat_backend_url BOT_CHAT_BACKEND_URL
+  assign_required_env bot_chat_bot_key BOT_CHAT_BOT_KEY
+  bot_chat_bot_id="$(read_env_value BOT_CHAT_BOT_ID || true)"
+  bot_chat_mqtt_tcp_url="$(read_env_value BOT_CHAT_MQTT_TCP_URL || true)"
 
   cat <<EOF
 Starting Bot Chat test agent
   plugin dir:   $PLUGIN_DIR
   env file:     $ENV_FILE
   config file:  $generated_config
-  service url:  $bot_chat_base_url
-  bot key:      ${bot_chat_access_key:0:12}...
+  backend url:  $bot_chat_backend_url
+  mqtt tcp:     ${bot_chat_mqtt_tcp_url:-<from bootstrap>}
+  bot key:      ${bot_chat_bot_key:0:12}...
   bot id:       ${bot_chat_bot_id:-<auto>}
-  model url:    $(require_env_value OPENAI_COMPAT_BASE_URL)
+  handler:      $(resolve_path "${BOT_CHAT_TEST_AGENT_HANDLER:-plugins/openclaw-bot-chat/examples/openai-compatible-handler.cjs}")
+  model url:    ${OPENAI_COMPAT_BASE_URL:-<required by default>}
   model:        ${OPENAI_COMPAT_MODEL:-gpt-4o-mini}
   log file:     $log_file
   debug logs:   ${BOT_CHAT_RUNTIME_DEBUG:-1}
@@ -240,12 +278,22 @@ EOF
 run_start() {
   local generated_config
   local log_file
+  local handler_setting
+  local resolved_handler
+  local openai_base_url
+  local openai_api_key
+  local lock_file
 
-  require_env_value OPENAI_COMPAT_BASE_URL >/dev/null
-  require_env_value OPENAI_COMPAT_API_KEY >/dev/null
+  handler_setting="${BOT_CHAT_TEST_AGENT_HANDLER:-plugins/openclaw-bot-chat/examples/openai-compatible-handler.cjs}"
+  resolved_handler="$(resolve_path "$handler_setting")"
+  if [[ "$resolved_handler" == *"/openai-compatible-handler.cjs" ]]; then
+    assign_required_env openai_base_url OPENAI_COMPAT_BASE_URL
+    assign_required_env openai_api_key OPENAI_COMPAT_API_KEY
+  fi
 
   generated_config="$(write_generated_config)"
   log_file="$(prepare_log_file)"
+  lock_file="$(lock_file_path)"
   ensure_plugin_dependencies
   build_plugin
   export BOT_CHAT_RUNTIME_DEBUG="${BOT_CHAT_RUNTIME_DEBUG:-1}"
@@ -256,12 +304,42 @@ run_start() {
 
   (
     cd "$PLUGIN_DIR"
+    exec 9>"$lock_file"
+    if ! flock -n 9; then
+      echo "Error: test agent is already running for state dir $(dirname -- "$lock_file")" >&2
+      echo "Use './scripts/test-agent.sh stop' or stop the existing process first." >&2
+      exit 1
+    fi
     exec > >(tee -a "$log_file") 2>&1
     echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] launching test agent"
     echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] BOT_CHAT_CONFIG=$generated_config"
     echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] BOT_CHAT_RUNTIME_DEBUG=$BOT_CHAT_RUNTIME_DEBUG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S%z')] LOCK_FILE=$lock_file"
     exec npm start
   )
+}
+
+run_stop() {
+  local state_dir
+  local lock_file
+  local stopped=0
+
+  state_dir="$(resolve_path "${BOT_CHAT_TEST_AGENT_STATE_DIR:-plugins/openclaw-bot-chat/data/test-agent}")"
+  lock_file="$state_dir/.runtime.lock"
+
+  while read -r pid _; do
+    [[ -n "${pid:-}" ]] || continue
+    kill "$pid" 2>/dev/null || true
+    stopped=1
+  done < <(pgrep -af "scripts/test-agent.sh start|node dist/index.js|@openclaw/openclaw-bot-chat")
+
+  rm -f "$lock_file"
+
+  if [[ "$stopped" -eq 1 ]]; then
+    echo "Stopped test agent processes."
+  else
+    echo "No test agent process found."
+  fi
 }
 
 run_check() {
@@ -294,6 +372,10 @@ main() {
     start)
       load_env
       run_start
+      ;;
+    stop)
+      load_env
+      run_stop
       ;;
     check)
       load_env

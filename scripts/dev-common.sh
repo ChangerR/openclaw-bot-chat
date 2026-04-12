@@ -29,10 +29,14 @@ FRONTEND_PORT_MAPPING=127.0.0.1:4173:3000
 BACKEND_PORT_MAPPING=127.0.0.1:8080:8080
 POSTGRES_PORT_MAPPING=127.0.0.1:5432:5432
 REDIS_PORT_MAPPING=127.0.0.1:6379:6379
+MQTT_TCP_PORT_MAPPING=127.0.0.1:1883:1883
+MQTT_WS_PORT_MAPPING=127.0.0.1:8083:8083
+EMQX_DASHBOARD_PORT_MAPPING=127.0.0.1:18083:18083
 
 # Frontend dev server runtime
 NEXT_PUBLIC_API_URL=http://test-claw.changer.site
-NEXT_PUBLIC_API_WS_HOST=test-claw.changer.site
+MQTT_TCP_PUBLIC_URL=mqtt://127.0.0.1:1883
+MQTT_WS_PUBLIC_URL=ws://test-claw.changer.site/mqtt
 
 # Fixed development test account
 DEV_TEST_USERNAME=tester
@@ -225,7 +229,7 @@ Frontend dev URL:    http://${DOMAIN}
 Frontend dev bind:   ${FRONTEND_BIND_HOST}:${FRONTEND_BIND_PORT}
 Backend upstream:    127.0.0.1:8080
 API base:            ${NEXT_PUBLIC_API_URL}
-WS host:             ${NEXT_PUBLIC_API_WS_HOST}
+Broker WS URL:       ${MQTT_WS_PUBLIC_URL}
 Env file:            ${ENV_FILE}
 EOF
 }

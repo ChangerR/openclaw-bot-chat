@@ -2,32 +2,32 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/openclaw-bot-chat/backend/internal/config"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
 	responsedto "github.com/openclaw-bot-chat/backend/internal/model/response"
 	"github.com/openclaw-bot-chat/backend/internal/service"
 	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
 )
 
-const (
-	defaultBotRuntimeHeartbeatIntervalMs = 15000
-	defaultBotRuntimeReconnectBaseMs     = 1000
-	defaultBotRuntimeReconnectMaxMs      = 30000
-)
-
 type BotRuntimeHandler struct {
 	msgService *service.MessageService
+	broker     config.BrokerClientConfig
 }
 
 type botRuntimeBootstrapResponse struct {
-	Bot             botRuntimeBotInfo         `json:"bot"`
-	Groups          []botRuntimeGroupInfo     `json:"groups"`
-	Dialogs         []botRuntimeDialogInfo    `json:"dialogs"`
-	Subscriptions   []botRuntimeSubscription  `json:"subscriptions"`
-	Checkpoints     []botRuntimeCheckpoint    `json:"checkpoints"`
-	TransportPolicy botRuntimeTransportPolicy `json:"transport_policy"`
+	Bot           botRuntimeBotInfo         `json:"bot"`
+	Broker        config.BrokerClientConfig `json:"broker"`
+	ClientID      string                    `json:"client_id"`
+	Groups        []botRuntimeGroupInfo     `json:"groups"`
+	Conversations []botRuntimeDialogInfo    `json:"conversations"`
+	Subscriptions []realtimeSubscription    `json:"subscriptions"`
+	PublishTopics []string                  `json:"publish_topics"`
+	History       realtimeHistoryInfo       `json:"history"`
 }
 
 type botRuntimeBotInfo struct {
@@ -45,41 +45,24 @@ type botRuntimeGroupInfo struct {
 }
 
 type botRuntimeDialogInfo struct {
-	DialogID string `json:"dialog_id"`
-	Topic    string `json:"topic,omitempty"`
+	ConversationID string `json:"conversation_id"`
+	Topic          string `json:"topic,omitempty"`
+	LastSeq        int64  `json:"last_seq,omitempty"`
+	LastMessageID  string `json:"last_message_id,omitempty"`
+	UpdatedAt      int64  `json:"updated_at,omitempty"`
 }
 
-type botRuntimeSubscription struct {
-	Topic string `json:"topic"`
-	QOS   int    `json:"qos,omitempty"`
-}
-
-type botRuntimeCheckpoint struct {
-	DialogID      string `json:"dialog_id"`
-	LastSeq       int64  `json:"last_seq,omitempty"`
-	LastMessageID string `json:"last_message_id,omitempty"`
-}
-
-type botRuntimeTransportPolicy struct {
-	HeartbeatIntervalMs int      `json:"heartbeat_interval_ms"`
-	BaseReconnectDelay  int      `json:"base_reconnect_delay_ms"`
-	MaxReconnectDelay   int      `json:"max_reconnect_delay_ms"`
-	Topics              []string `json:"topics"`
-}
-
-type botRuntimeSendMessageRequest struct {
-	DialogID         string                 `json:"dialog_id"`
-	MessageID        string                 `json:"message_id"`
-	ContentType      string                 `json:"content_type"`
-	Body             string                 `json:"body"`
-	Meta             map[string]interface{} `json:"meta,omitempty"`
-	Metadata         map[string]interface{} `json:"metadata,omitempty"`
-	ReplyToMessageID string                 `json:"reply_to_message_id,omitempty"`
-	Topic            string                 `json:"topic,omitempty"`
-}
-
-func NewBotRuntimeHandler(msgService *service.MessageService) *BotRuntimeHandler {
-	return &BotRuntimeHandler{msgService: msgService}
+func NewBotRuntimeHandler(msgService *service.MessageService, mqttCfg config.MQTTConfig) *BotRuntimeHandler {
+	return &BotRuntimeHandler{
+		msgService: msgService,
+		broker: config.BrokerClientConfig{
+			TCPPublicURL: mqttCfg.TCPPublicURL,
+			WSPublicURL:  mqttCfg.WSPublicURL,
+			Username:     mqttCfg.Username,
+			Password:     mqttCfg.Password,
+			QOS:          int(mqttCfg.QOS),
+		},
+	}
 }
 
 func (h *BotRuntimeHandler) Bootstrap(c *gin.Context) {
@@ -95,37 +78,43 @@ func (h *BotRuntimeHandler) Bootstrap(c *gin.Context) {
 		return
 	}
 
-	conversations, err := h.msgService.GetConversationsForBot(c.Request.Context(), bot.ID, 200)
+	conversations, err := h.msgService.GetConversationListForBot(c.Request.Context(), bot.ID, 200)
 	if err != nil {
 		apiresponse.InternalError(c, err.Error())
 		return
 	}
 
-	dialogs := make([]botRuntimeDialogInfo, 0, len(conversations))
-	for _, conversationID := range conversations {
-		dialogs = append(dialogs, botRuntimeDialogInfo{
-			DialogID: conversationID,
-			Topic:    conversationID,
-		})
+	subscriptionTopics, err := h.msgService.ListBotRealtimeTopics(c.Request.Context(), bot.ID)
+	if err != nil {
+		apiresponse.InternalError(c, err.Error())
+		return
 	}
 
-	subscriptions := []botRuntimeSubscription{
-		{Topic: "chat/dm/user/+/bot/" + bot.ID.String(), QOS: 1},
-		{Topic: "chat/dm/bot/" + bot.ID.String() + "/bot/+", QOS: 1},
-		{Topic: "chat/dm/bot/+/bot/" + bot.ID.String(), QOS: 1},
-	}
 	groupInfos := make([]botRuntimeGroupInfo, 0, len(groups))
+	publishTopics := make([]string, 0, len(conversations)+len(groups))
 	for _, group := range groups {
-		topic := "chat/group/" + group.ID.String()
+		topic := service.NormalizeConversationReference(fmt.Sprintf("chat/group/%s", group.ID.String()))
 		groupInfos = append(groupInfos, botRuntimeGroupInfo{
 			ID:    group.ID.String(),
 			Name:  group.Name,
 			Topic: topic,
 		})
-		subscriptions = append(subscriptions, botRuntimeSubscription{
-			Topic: topic,
-			QOS:   1,
-		})
+		publishTopics = append(publishTopics, topic)
+	}
+
+	dialogs := make([]botRuntimeDialogInfo, 0, len(conversations))
+	for _, conversation := range conversations {
+		dialog := botRuntimeDialogInfo{
+			ConversationID: conversation.ConversationID,
+			Topic:          conversation.ConversationID,
+		}
+		if conversation.LastMessage != nil {
+			dialog.LastSeq = conversation.LastMessage.Seq
+			dialog.LastMessageID = conversation.LastMessage.MessageID.String()
+			dialog.UpdatedAt = conversation.LastMessage.CreatedAt.Unix()
+		}
+		dialogs = append(dialogs, dialog)
+		publishTopics = append(publishTopics, conversation.ConversationID)
 	}
 
 	status := ""
@@ -141,79 +130,32 @@ func (h *BotRuntimeHandler) Bootstrap(c *gin.Context) {
 			Status:      status,
 			Config:      copyBotRuntimeMap(map[string]interface{}(bot.Config)),
 		},
+		Broker:        h.broker,
+		ClientID:      fmt.Sprintf("bot-%s-%s", bot.ID.String(), uuid.NewString()[:8]),
 		Groups:        groupInfos,
-		Dialogs:       dialogs,
-		Subscriptions: subscriptions,
-		Checkpoints:   []botRuntimeCheckpoint{},
-		TransportPolicy: botRuntimeTransportPolicy{
-			HeartbeatIntervalMs: defaultBotRuntimeHeartbeatIntervalMs,
-			BaseReconnectDelay:  defaultBotRuntimeReconnectBaseMs,
-			MaxReconnectDelay:   defaultBotRuntimeReconnectMaxMs,
-			Topics:              []string{},
+		Conversations: dialogs,
+		Subscriptions: toRealtimeSubscriptions(subscriptionTopics, h.broker.QOS),
+		PublishTopics: service.UniqueTopicsForExport(publishTopics),
+		History: realtimeHistoryInfo{
+			MaxCatchupBatch: 200,
 		},
 	})
 }
 
-func (h *BotRuntimeHandler) SendMessage(c *gin.Context) {
+func (h *BotRuntimeHandler) GetConversationMessages(c *gin.Context) {
 	bot, ok := middleware.GetBot(c)
 	if !ok {
 		apiresponse.Unauthorized(c, "unauthorized")
 		return
 	}
 
-	var req botRuntimeSendMessageRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apiresponse.BadRequest(c, "invalid request: "+err.Error())
+	conversationID := service.NormalizeConversationReference(c.Param("conversation_id"))
+	if conversationID == "" {
+		apiresponse.BadRequest(c, "conversation_id is required")
 		return
 	}
 
-	message, err := h.msgService.SendBotMessage(c.Request.Context(), bot.ID, service.SendMessageRequest{
-		ID:             req.MessageID,
-		ConversationID: req.DialogID,
-		Topic:          req.Topic,
-		ContentType:    req.ContentType,
-		Body:           req.Body,
-		Meta:           mergeBotRuntimeMeta(req.Meta, req.Metadata, req.ReplyToMessageID),
-		FromType:       "bot",
-		FromID:         bot.ID.String(),
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrMessageSenderForbidden),
-			errors.Is(err, service.ErrMessageTargetForbidden),
-			errors.Is(err, service.ErrConversationAccessDenied):
-			apiresponse.Forbidden(c, err.Error())
-		default:
-			apiresponse.BadRequest(c, err.Error())
-		}
-		return
-	}
-
-	apiresponse.Success(c, responsedto.NewMessageResponse(message))
-}
-
-func (h *BotRuntimeHandler) Heartbeat(c *gin.Context) {
-	if _, ok := middleware.GetBot(c); !ok {
-		apiresponse.Unauthorized(c, "unauthorized")
-		return
-	}
-	apiresponse.Success(c, gin.H{"ok": true})
-}
-
-func (h *BotRuntimeHandler) GetDialogMessages(c *gin.Context) {
-	bot, ok := middleware.GetBot(c)
-	if !ok {
-		apiresponse.Unauthorized(c, "unauthorized")
-		return
-	}
-
-	dialogID := service.NormalizeConversationReference(c.Param("dialog_id"))
-	if dialogID == "" {
-		apiresponse.BadRequest(c, "dialog_id is required")
-		return
-	}
-
-	if err := h.msgService.CanBotAccessConversation(c.Request.Context(), bot.ID, dialogID); err != nil {
+	if err := h.msgService.CanBotAccessConversation(c.Request.Context(), bot.ID, conversationID); err != nil {
 		switch {
 		case errors.Is(err, service.ErrConversationAccessDenied):
 			apiresponse.Forbidden(c, err.Error())
@@ -236,11 +178,11 @@ func (h *BotRuntimeHandler) GetDialogMessages(c *gin.Context) {
 		err      error
 	)
 	if afterSeq > 0 {
-		rawMessages, queryErr := h.msgService.GetMessagesAfterSeq(c.Request.Context(), dialogID, limit, afterSeq)
+		rawMessages, queryErr := h.msgService.GetMessagesAfterSeq(c.Request.Context(), conversationID, limit, afterSeq)
 		err = queryErr
 		messages = responsedto.NewMessageResponses(rawMessages)
 	} else {
-		rawMessages, queryErr := h.msgService.GetMessages(c.Request.Context(), dialogID, limit, 0)
+		rawMessages, queryErr := h.msgService.GetMessages(c.Request.Context(), conversationID, limit, 0)
 		err = queryErr
 		messages = responsedto.NewMessageResponses(rawMessages)
 	}
@@ -250,24 +192,6 @@ func (h *BotRuntimeHandler) GetDialogMessages(c *gin.Context) {
 	}
 
 	apiresponse.Success(c, gin.H{"messages": messages})
-}
-
-func mergeBotRuntimeMeta(primary map[string]interface{}, secondary map[string]interface{}, replyToMessageID string) map[string]interface{} {
-	if len(primary) == 0 && len(secondary) == 0 && replyToMessageID == "" {
-		return nil
-	}
-
-	merged := make(map[string]interface{}, len(primary)+len(secondary)+1)
-	for key, value := range secondary {
-		merged[key] = value
-	}
-	for key, value := range primary {
-		merged[key] = value
-	}
-	if replyToMessageID != "" {
-		merged["reply_to_message_id"] = replyToMessageID
-	}
-	return merged
 }
 
 func copyBotRuntimeMap(source map[string]interface{}) map[string]interface{} {

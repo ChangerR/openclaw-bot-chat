@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/openclaw-bot-chat/backend/internal/middleware"
+	"github.com/openclaw-bot-chat/backend/internal/model"
 	responsedto "github.com/openclaw-bot-chat/backend/internal/model/response"
 	"github.com/openclaw-bot-chat/backend/internal/service"
 	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
@@ -38,6 +39,7 @@ func (h *MessageHandler) GetMessages(c *gin.Context) {
 	if beforeSeq == 0 {
 		beforeSeq, _ = strconv.ParseInt(c.DefaultQuery("before", "0"), 10, 64)
 	}
+	afterSeq, _ := strconv.ParseInt(c.DefaultQuery("after_seq", "0"), 10, 64)
 
 	if limit < 1 || limit > 200 {
 		limit = 50
@@ -54,7 +56,7 @@ func (h *MessageHandler) GetMessages(c *gin.Context) {
 		return
 	}
 
-	messages, err := h.msgService.GetMessages(c.Request.Context(), conversationID, limit, beforeSeq)
+	messages, err := h.loadMessages(c, conversationID, limit, beforeSeq, afterSeq)
 	if err != nil {
 		apiresponse.InternalError(c, err.Error())
 		return
@@ -80,6 +82,7 @@ func (h *MessageHandler) GetMessagesByConversation(c *gin.Context) {
 	if beforeSeq == 0 {
 		beforeSeq, _ = strconv.ParseInt(c.DefaultQuery("before", "0"), 10, 64)
 	}
+	afterSeq, _ := strconv.ParseInt(c.DefaultQuery("after_seq", "0"), 10, 64)
 	if limit < 1 || limit > 200 {
 		limit = 50
 	}
@@ -95,12 +98,19 @@ func (h *MessageHandler) GetMessagesByConversation(c *gin.Context) {
 		return
 	}
 
-	messages, err := h.msgService.GetMessages(c.Request.Context(), conversationID, limit, beforeSeq)
+	messages, err := h.loadMessages(c, conversationID, limit, beforeSeq, afterSeq)
 	if err != nil {
 		apiresponse.InternalError(c, err.Error())
 		return
 	}
 	apiresponse.Success(c, responsedto.NewMessageResponses(messages))
+}
+
+func (h *MessageHandler) loadMessages(c *gin.Context, conversationID string, limit int, beforeSeq int64, afterSeq int64) ([]model.Message, error) {
+	if afterSeq > 0 {
+		return h.msgService.GetMessagesAfterSeq(c.Request.Context(), conversationID, limit, afterSeq)
+	}
+	return h.msgService.GetMessages(c.Request.Context(), conversationID, limit, beforeSeq)
 }
 
 // GetConversations returns the list of conversations for the current user
@@ -130,39 +140,10 @@ func (h *MessageHandler) GetConversations(c *gin.Context) {
 	apiresponse.Success(c, items)
 }
 
-// SendMessage creates a message through HTTP for history/bootstrap/fallback flows
-func (h *MessageHandler) SendMessage(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		apiresponse.Unauthorized(c, "unauthorized")
-		return
-	}
-
-	var req service.SendMessageRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		apiresponse.BadRequest(c, "invalid request: "+err.Error())
-		return
-	}
-
-	message, err := h.msgService.SendMessage(c.Request.Context(), userID, req)
-	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrMessageSenderForbidden),
-			errors.Is(err, service.ErrMessageTargetForbidden),
-			errors.Is(err, service.ErrConversationAccessDenied):
-			apiresponse.Forbidden(c, err.Error())
-		default:
-			apiresponse.BadRequest(c, err.Error())
-		}
-		return
-	}
-
-	apiresponse.Success(c, responsedto.NewMessageResponse(message))
-}
-
 // MessageQuery represents query params for messages
 type MessageQuery struct {
 	ConversationID string `form:"conversation_id" binding:"required"`
 	Limit          int    `form:"limit"`
 	BeforeSeq      int64  `form:"before_seq"`
+	AfterSeq       int64  `form:"after_seq"`
 }

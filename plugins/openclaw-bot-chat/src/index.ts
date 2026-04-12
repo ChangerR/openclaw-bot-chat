@@ -21,7 +21,8 @@ export async function main(): Promise<void> {
   const config = await loadConfig();
   logger.info("runtime.config.loaded", {
     configPath: config.configPath,
-    serviceUrl: config.botChatBaseUrl,
+    backendUrl: config.botChatBaseUrl,
+    mqttTcpUrl: config.mqttTcpUrl,
     stateDir: config.stateDir,
     defaultBot: config.defaultBot,
     botKeys: Object.keys(config.bots),

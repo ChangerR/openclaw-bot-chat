@@ -10,11 +10,8 @@ import {
 import type {
   BotChatMessage,
   BotChatOutgoingMessage,
-  DialogInfo,
   OpenClawRequest,
   OpenClawResponse,
-  Subscription,
-  TransportPolicy,
 } from "../types";
 
 type JsonRecord = Record<string, unknown>;
@@ -33,47 +30,6 @@ export interface IncomingMessageRoute {
   action: keyof ActionPermissions;
   channel: ChannelContext;
   permission: PermissionCheck;
-}
-
-export function buildBotSubscriptionTopics(
-  botId: string,
-  groups: { id: string; topic?: string }[] = [],
-  subscriptions: Subscription[] = [],
-  dialogs: DialogInfo[] = [],
-  transportPolicy?: TransportPolicy,
-): string[] {
-  const topics = new Set<string>([
-    `chat/dm/user/+/bot/${botId}`,
-    `chat/dm/bot/${botId}/bot/+`,
-    `chat/dm/bot/+/bot/${botId}`,
-  ]);
-
-  for (const group of groups) {
-    if (group.topic) {
-      topics.add(group.topic);
-    } else if (group.id) {
-      topics.add(`chat/group/${group.id}`);
-    }
-  }
-  for (const subscription of subscriptions) {
-    if (subscription.topic) {
-      topics.add(subscription.topic);
-    }
-  }
-  for (const dialog of dialogs) {
-    if (dialog.topic) {
-      topics.add(dialog.topic);
-    } else if (dialog.dialog_id.startsWith("chat/")) {
-      topics.add(dialog.dialog_id);
-    }
-  }
-  for (const topic of transportPolicy?.topics ?? []) {
-    if (topic) {
-      topics.add(topic);
-    }
-  }
-
-  return [...topics];
 }
 
 export function normalizeBotChatMessage(
@@ -225,7 +181,7 @@ export function shouldProcessMessage(
     return false;
   }
   if (isGroupMessage(message)) {
-    return getMentionedBotIds(message).includes(botId);
+    return isMessageMentionedForBot(message, botId);
   }
   return true;
 }
@@ -235,12 +191,21 @@ export function toOpenClawRequest(
   sessionId: string,
   channel?: ChannelContext,
 ): OpenClawRequest {
+  const normalizedContent = readNormalizedBody(message);
+  const mentionedCurrentBot = channel?.botId
+    ? isMessageMentionedForBot(message, channel.botId)
+    : undefined;
+
   return {
     session_id: sessionId,
-    content: message.body,
+    content: normalizedContent,
     metadata: {
       dialog_id: message.dialog_id,
       message_id: message.message_id,
+      original_content: message.body,
+      ...(normalizedContent !== message.body
+        ? { normalized_content: normalizedContent }
+        : {}),
       from_type: message.from_type,
       from_id: message.from_id,
       ...(message.to_type ? { to_type: message.to_type } : {}),
@@ -249,6 +214,9 @@ export function toOpenClawRequest(
       timestamp: message.timestamp,
       ...(message.seq !== undefined ? { seq: message.seq } : {}),
       ...(message.meta ? { message_meta: message.meta } : {}),
+      ...(mentionedCurrentBot !== undefined
+        ? { mentioned_current_bot: mentionedCurrentBot }
+        : {}),
       ...(channel
         ? {
             channel_context: {
@@ -280,7 +248,8 @@ export function toBotChatOutgoingMessage(
   const topic =
     readString(response.metadata?.["topic"]) ??
     readString(sourceMessage.meta?.["reply_topic"]) ??
-    buildReplyTopic(sourceMessage.dialog_id, botId);
+    buildReplyTopic(sourceMessage.dialog_id, botId) ??
+    sourceMessage.dialog_id;
 
   const meta = mergeMeta(response.metadata, sourceMessage.meta, normalizeOutgoingAssetMeta(response, contentType), {
     in_reply_to_message_id: sourceMessage.message_id,
@@ -288,13 +257,17 @@ export function toBotChatOutgoingMessage(
   });
 
   return {
-    dialog_id: sourceMessage.dialog_id,
     message_id: randomUUID(),
+    topic,
+    conversation_id: sourceMessage.dialog_id,
+    from_type: "bot",
+    from_id: botId,
+    to_type: sourceMessage.from_type,
+    to_id: sourceMessage.from_id,
     content_type: contentType,
     body,
     ...(meta ? { meta } : {}),
-    reply_to_message_id: sourceMessage.message_id,
-    ...(topic ? { topic } : {}),
+    timestamp: Math.floor(Date.now() / 1000),
   };
 }
 
@@ -313,20 +286,22 @@ export function toRealtimePublishPayload(
     topic,
     payload: {
       id: outgoing.message_id,
+      topic,
+      conversation_id: outgoing.conversation_id,
       from: {
-        type: "bot",
-        id: botId,
+        type: outgoing.from_type ?? "bot",
+        id: outgoing.from_id ?? botId,
       },
       to: {
-        type: sourceMessage.from_type,
-        id: sourceMessage.from_id,
+        type: outgoing.to_type ?? sourceMessage.from_type,
+        id: outgoing.to_id ?? sourceMessage.from_id,
       },
       content: {
         type: outgoing.content_type,
         body: outgoing.body,
         ...(outgoing.meta ? { meta: outgoing.meta } : {}),
       },
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: outgoing.timestamp,
     },
   };
 }
@@ -484,13 +459,39 @@ function isGroupMessage(message: BotChatMessage): boolean {
 }
 
 function getMentionedBotIds(message: BotChatMessage): string[] {
+  const mentioned = new Set<string>();
   const raw = message.meta?.["mentioned_bot_ids"];
-  if (!Array.isArray(raw)) {
-    return [];
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === "string" && item.length > 0) {
+        mentioned.add(item);
+      }
+    }
   }
-  return raw.filter(
-    (item): item is string => typeof item === "string" && item.length > 0,
-  );
+
+  const normalizedBody = readString(message.meta?.["normalized_body"]);
+  if (normalizedBody) {
+    const matches = normalizedBody.matchAll(/<@bot:([^>]+)>/g);
+    for (const match of matches) {
+      if (match[1]) {
+        mentioned.add(match[1]);
+      }
+    }
+  }
+
+  return [...mentioned];
+}
+
+function isMessageMentionedForBot(
+  message: BotChatMessage,
+  botId: string,
+): boolean {
+  return getMentionedBotIds(message).includes(botId);
+}
+
+function readNormalizedBody(message: BotChatMessage): string {
+  const normalized = readString(message.meta?.["normalized_body"]);
+  return normalized ?? message.body;
 }
 
 function normalizeOutgoingBody(

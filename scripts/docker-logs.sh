@@ -13,4 +13,4 @@ if [[ $# -gt 0 ]]; then
   exit 0
 fi
 
-compose logs -f frontend backend postgres redis mosquitto
+compose logs -f frontend backend postgres redis emqx

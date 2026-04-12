@@ -11,6 +11,7 @@ import type {
   ApiResponse,
   Asset,
   PreparedUpload,
+  RealtimeBootstrapResponse,
 } from './types'
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/+$/, '')
@@ -137,24 +138,16 @@ export const botsApi = {
 export const conversationsApi = {
   list: () => request<ConversationApiResponse[]>('/api/v1/conversations'),
 
-  getMessages: (conversationId: string, limit = 50, before?: string) => {
+  getMessages: (conversationId: string, limit = 50, beforeSeq?: number, afterSeq?: number) => {
     const params = new URLSearchParams({ limit: String(limit) })
-    if (before) params.set('before', before)
+    if (typeof beforeSeq === 'number') params.set('before_seq', String(beforeSeq))
+    if (typeof afterSeq === 'number') params.set('after_seq', String(afterSeq))
     return request<MessageApiResponse[]>(`/api/v1/messages/${conversationId}?${params}`)
   },
+}
 
-  sendMessage: (
-    data: {
-      id?: string
-      conversation_id?: string
-      to: { type: 'bot' | 'group' | 'user'; id: string }
-      content: { type: string; body?: string; url?: string; name?: string; size?: number; meta?: Record<string, unknown> }
-    },
-  ) =>
-    request<MessageApiResponse>(`/api/v1/messages`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
+export const realtimeApi = {
+  bootstrap: () => request<RealtimeBootstrapResponse>('/api/v1/realtime/bootstrap'),
 }
 
 export const assetsApi = {

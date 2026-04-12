@@ -1,19 +1,18 @@
 'use client'
 
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react'
-import { botsApi, conversationsApi, groupsApi, getToken } from '@/lib/api'
+import { botsApi, conversationsApi, groupsApi, realtimeApi } from '@/lib/api'
 import {
   buildConversationFromTopic,
   compareConversationsByLatest,
   compareMessagesByTime,
-  conversationIdFromTopic,
   createBotDraftConversation,
   createGroupDraftConversation,
   normalizeApiMessage,
   normalizeConversations,
-  normalizeWsMessage,
+  normalizeRealtimeMessage,
 } from '@/lib/chat'
-import { getWebSocketClient } from '@/lib/websocket'
+import { getMqttRealtimeClient } from '@/lib/mqtt'
 import { createClientId } from '@/lib/id'
 import type {
   Asset,
@@ -23,8 +22,9 @@ import type {
   ConversationApiResponse,
   Group,
   Message,
-  WsIncomingMessage,
-  WsConnectionState,
+  RealtimeBootstrapResponse,
+  RealtimeConnectionState,
+  RealtimeMessagePayload,
 } from '@/lib/types'
 import { useAuth } from './AuthContext'
 
@@ -35,7 +35,7 @@ interface ChatContextType {
   bots: Bot[]
   groups: Group[]
   isLoading: boolean
-  connectionState: WsConnectionState
+  connectionState: RealtimeConnectionState
   setCurrentConversation: (conv: Conversation | null) => void
   openBotConversation: (bot: Bot) => void
   openGroupConversation: (group: Group) => void
@@ -57,9 +57,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<Map<string, Message[]>>(new Map())
   const [bots, setBots] = useState<Bot[]>([])
   const [groups, setGroups] = useState<Group[]>([])
+  const [realtimeBootstrap, setRealtimeBootstrap] = useState<RealtimeBootstrapResponse | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [connectionState, setConnectionState] = useState<WsConnectionState>('idle')
+  const [connectionState, setConnectionState] = useState<RealtimeConnectionState>('idle')
   const subscriptionsRef = useRef<Map<string, () => void>>(new Map())
+  const conversationsRef = useRef<Conversation[]>([])
+  const lastSeqByConversationRef = useRef<Map<string, number>>(new Map())
+  const hasConnectedOnceRef = useRef(false)
 
   const mergeConversationMessages = useCallback((existing: Message[], incoming: Message[]) => {
     const merged = new Map<string, Message>()
@@ -139,37 +143,52 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         )
         .sort(compareConversationsByLatest),
     )
+
+    if (typeof message.seq === 'number') {
+      const known = lastSeqByConversationRef.current.get(message.conversation_id) || 0
+      if (message.seq > known) {
+        lastSeqByConversationRef.current.set(message.conversation_id, message.seq)
+      }
+    }
   }, [])
 
   const ensureTopicSubscription = useCallback((topic: string) => {
-    if (!topic || subscriptionsRef.current.has(topic) || !user) {
+    if (!topic || subscriptionsRef.current.has(topic) || !user || !realtimeBootstrap) {
       return
     }
 
-    const ws = getWebSocketClient()
-    const unsubscribe = ws.subscribe(topic, (frame) => {
-      const conversationId = conversationIdFromTopic(frame.topic, user.id)
-      if (!conversationId) {
-        return
-      }
+    const mqtt = getMqttRealtimeClient()
+    const configuredQos = realtimeBootstrap.subscriptions.find((item) => item.topic === topic)?.qos
+    const qos = typeof configuredQos === 'number' ? configuredQos : realtimeBootstrap.broker.qos || 0
+    const unsubscribe = mqtt.subscribe(
+      topic,
+      (incomingTopic, payload) => {
+        const conversationId = payload.conversation_id || incomingTopic
+        const existingConversation = conversationsRef.current.find((item) => item.id === conversationId)
+        const conversation =
+          existingConversation || buildConversationFromTopic(incomingTopic, user.id, bots, groups)
 
-      const existingConversation = conversations.find((item) => item.id === conversationId)
-      const conversation =
-        existingConversation || buildConversationFromTopic(frame.topic, user.id, bots, groups)
+        if (!conversation) {
+          return
+        }
 
-      if (!conversation) {
-        return
-      }
+        if (!existingConversation) {
+          upsertConversation(conversation)
+        }
 
-      if (!existingConversation) {
-        upsertConversation(conversation)
-      }
-
-      upsertMessage(normalizeWsMessage(frame.topic, frame.payload, conversation.id))
-    })
+        const normalized = normalizeRealtimeMessage(payload, incomingTopic)
+        upsertMessage({
+          ...normalized,
+          conversation_id: conversation.id,
+          pending: false,
+          failed: false,
+        })
+      },
+      qos,
+    )
 
     subscriptionsRef.current.set(topic, unsubscribe)
-  }, [bots, conversations, groups, upsertConversation, upsertMessage, user])
+  }, [bots, groups, realtimeBootstrap, upsertConversation, upsertMessage, user])
 
   const refreshBots = useCallback(async () => {
     if (!isAuthenticated) return
@@ -217,14 +236,76 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           mergeConversationMessages(currentMessages, sortedMessages),
         )
       })
+
+      const highestSeq = sortedMessages.reduce<number>(
+        (maxSeq, message) => (typeof message.seq === 'number' && message.seq > maxSeq ? message.seq : maxSeq),
+        0,
+      )
+      if (highestSeq > 0) {
+        lastSeqByConversationRef.current.set(conversationId, highestSeq)
+      }
     },
     [conversations, mergeConversationMessages],
   )
 
+  const catchupConversation = useCallback(
+    async (conversation: Conversation) => {
+      if (!realtimeBootstrap) {
+        return
+      }
+
+      const afterSeq = lastSeqByConversationRef.current.get(conversation.id)
+      if (typeof afterSeq !== 'number' || afterSeq <= 0) {
+        return
+      }
+
+      const maxBatch = realtimeBootstrap.history?.max_catchup_batch || 100
+      const loadedMessages = await Promise.all(
+        conversation.topics.map(async (topic) => {
+          const items = await conversationsApi.getMessages(topic, maxBatch, undefined, afterSeq)
+          return items.map((item) => normalizeApiMessage(item, conversation.id))
+        }),
+      )
+
+      const merged = loadedMessages
+        .flat()
+        .reduce<Map<string, Message>>((acc, message) => {
+          acc.set(message.id, message)
+          return acc
+        }, new Map())
+
+      const sortedMessages = [...merged.values()].sort(compareMessagesByTime)
+      if (sortedMessages.length === 0) {
+        return
+      }
+
+      setMessages((prev) => {
+        const currentMessages = prev.get(conversation.id) || []
+        return new Map(prev).set(
+          conversation.id,
+          mergeConversationMessages(currentMessages, sortedMessages),
+        )
+      })
+
+      const highestSeq = sortedMessages.reduce<number>(
+        (maxSeq, message) => (typeof message.seq === 'number' && message.seq > maxSeq ? message.seq : maxSeq),
+        afterSeq,
+      )
+      lastSeqByConversationRef.current.set(conversation.id, highestSeq)
+    },
+    [mergeConversationMessages, realtimeBootstrap],
+  )
+
+  const catchupAllConversations = useCallback(async () => {
+    const currentConversations = conversationsRef.current
+    await Promise.all(currentConversations.map((conversation) => catchupConversation(conversation)))
+  }, [catchupConversation])
+
   const reconnectRealtime = useCallback(async () => {
-    const ws = getWebSocketClient()
-    await ws.reconnectNow()
-  }, [])
+    const mqtt = getMqttRealtimeClient()
+    await mqtt.reconnectNow()
+    await catchupAllConversations()
+  }, [catchupAllConversations])
 
   const openBotConversation = useCallback(
     (bot: Bot) => {
@@ -251,10 +332,15 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     async (input: ComposerMessageInput) => {
       if (!currentConversation || !user) return
 
-      const ws = getWebSocketClient()
+      if (!realtimeBootstrap) {
+        throw new Error('Realtime bootstrap is unavailable')
+      }
+
+      const mqtt = getMqttRealtimeClient()
       const messageId = createClientId()
       currentConversation.topics.forEach(ensureTopicSubscription)
       const content = buildOutgoingContent(input)
+      const timestamp = Math.floor(Date.now() / 1000)
       const optimisticMessage: Message = {
         id: messageId,
         conversation_id: currentConversation.id,
@@ -264,7 +350,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         from: { type: 'user', id: user.id, name: user.username },
         to: { type: currentConversation.target.type, id: currentConversation.target.id, name: currentConversation.name },
         content,
-        timestamp: Math.floor(Date.now() / 1000),
+        timestamp,
         created_at: new Date().toISOString(),
         pending: true,
       }
@@ -272,44 +358,39 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       upsertMessage(optimisticMessage)
 
       try {
-        await ws.publish(currentConversation.send_topic, {
+        const payload: RealtimeMessagePayload = {
           id: messageId,
+          topic: currentConversation.send_topic,
+          conversation_id: currentConversation.send_topic,
+          timestamp,
           from: { type: 'user', id: user.id },
           to: { type: currentConversation.target.type, id: currentConversation.target.id },
           content,
-        })
-      } catch (error) {
-        try {
-          const fallbackMessage = await conversationsApi.sendMessage({
-            id: messageId,
-            conversation_id: currentConversation.send_topic,
-            to: { type: currentConversation.target.type, id: currentConversation.target.id },
-            content,
-          })
-          upsertMessage(normalizeApiMessage(fallbackMessage, currentConversation.id))
-        } catch (fallbackError) {
-          setMessages((prev) => {
-            const next = new Map(prev)
-            const currentMessages = next.get(currentConversation.id) || []
-            next.set(
-              currentConversation.id,
-              currentMessages.map((item) =>
-                item.id === messageId
-                  ? {
-                      ...item,
-                      pending: false,
-                      failed: true,
-                    }
-                  : item,
-              ),
-            )
-            return next
-          })
-          throw fallbackError instanceof Error ? fallbackError : error
         }
+
+        await mqtt.publish(currentConversation.send_topic, payload, realtimeBootstrap.broker.qos || 0)
+      } catch (error) {
+        setMessages((prev) => {
+          const next = new Map(prev)
+          const currentMessages = next.get(currentConversation.id) || []
+          next.set(
+            currentConversation.id,
+            currentMessages.map((item) =>
+              item.id === messageId
+                ? {
+                    ...item,
+                    pending: false,
+                    failed: true,
+                  }
+                : item,
+            ),
+          )
+          return next
+        })
+        throw error
       }
     },
-    [currentConversation, ensureTopicSubscription, upsertMessage, user],
+    [currentConversation, ensureTopicSubscription, realtimeBootstrap, upsertMessage, user],
   )
 
   useEffect(() => {
@@ -320,14 +401,27 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       setMessages(new Map())
       setBots([])
       setGroups([])
+      setRealtimeBootstrap(null)
       setConnectionState('idle')
+      hasConnectedOnceRef.current = false
+      lastSeqByConversationRef.current.clear()
+      for (const [, unsubscribe] of subscriptionsRef.current.entries()) {
+        unsubscribe()
+      }
+      subscriptionsRef.current.clear()
+      void getMqttRealtimeClient().disconnect()
       return
     }
 
     let cancelled = false
     setIsLoading(true)
 
-    Promise.all([refreshBots(), refreshGroups(), refreshConversations()])
+    Promise.all([
+      refreshBots(),
+      refreshGroups(),
+      refreshConversations(),
+      realtimeApi.bootstrap().then((bootstrap) => setRealtimeBootstrap(bootstrap)),
+    ])
       .catch((error) => {
         console.error('Failed to load chat data:', error)
       })
@@ -362,6 +456,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [bots, groups, rawConversations, user])
 
   useEffect(() => {
+    conversationsRef.current = conversations
+  }, [conversations])
+
+  useEffect(() => {
     if (!currentConversation) return
     setCurrentConversation((prev) => {
       if (!prev) return prev
@@ -370,22 +468,43 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, [conversations])
 
   useEffect(() => {
-    if (!isAuthenticated) return
+    if (!isAuthenticated || !realtimeBootstrap) return
 
-    const ws = getWebSocketClient()
-    const unsubscribe = ws.onStateChange(setConnectionState)
-    const currentToken = getToken()
-    if (currentToken) {
-      void ws.connect(currentToken)
+    const mqtt = getMqttRealtimeClient()
+    const unsubscribe = mqtt.onStateChange((nextState) => {
+      setConnectionState(nextState)
+      if (nextState !== 'connected') {
+        return
+      }
+      if (!hasConnectedOnceRef.current) {
+        hasConnectedOnceRef.current = true
+        return
+      }
+      void catchupAllConversations()
+    })
+
+    void mqtt.connect({
+      wsUrl: realtimeBootstrap.broker.ws_url,
+      username: realtimeBootstrap.broker.username,
+      password: realtimeBootstrap.broker.password,
+      clientId: realtimeBootstrap.client_id,
+    }).catch((error) => {
+      console.error('Failed to connect MQTT broker:', error)
+      setConnectionState('disconnected')
+    })
+
+    return () => {
+      unsubscribe()
     }
-
-    return unsubscribe
-  }, [isAuthenticated])
+  }, [catchupAllConversations, isAuthenticated, realtimeBootstrap])
 
   useEffect(() => {
-    if (!user) return
+    if (!user || !realtimeBootstrap) return
 
-    const nextTopics = new Set<string>(conversations.flatMap((conversation) => conversation.topics))
+    const nextTopics = new Set<string>([
+      ...realtimeBootstrap.subscriptions.map((item) => item.topic),
+      ...conversations.flatMap((conversation) => conversation.topics),
+    ])
 
     for (const [topic, unsubscribe] of subscriptionsRef.current.entries()) {
       if (!nextTopics.has(topic)) {
@@ -397,7 +516,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     nextTopics.forEach((topic) => {
       ensureTopicSubscription(topic)
     })
-  }, [conversations, ensureTopicSubscription, user])
+  }, [conversations, ensureTopicSubscription, realtimeBootstrap, user])
 
   return (
     <ChatContext.Provider

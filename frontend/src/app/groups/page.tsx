@@ -34,6 +34,7 @@ export default function GroupsPage() {
   const [view, setView] = useState<'chat' | 'create'>('chat')
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null)
   const [showDrawer, setShowDrawer] = useState(false)
+  const [showMobileList, setShowMobileList] = useState(true)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -71,6 +72,7 @@ export default function GroupsPage() {
     setSelectedGroup(group)
     setView('chat')
     setShowDrawer(false)
+    setShowMobileList(false)
   }
 
   const currentMessages = currentConversation ? messages.get(currentConversation.id) || [] : []
@@ -81,12 +83,12 @@ export default function GroupsPage() {
   return (
     <AppLayout>
       {/* Column 2: Group List */}
-      <aside className="w-[300px] h-screen bg-white/65 backdrop-blur-xl border-r border-white/20 flex flex-col overflow-hidden">
+      <aside className={`w-full md:w-[300px] h-full bg-white/65 backdrop-blur-xl border-r border-white/20 flex flex-col overflow-hidden flex-shrink-0 ${showMobileList ? 'flex' : 'hidden md:flex'}`}>
         <div className="p-4 border-b border-white/20 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold text-slate-800 tracking-tight">Groups</h2>
             <button
-              onClick={() => setView('create')}
+              onClick={() => { setView('create'); setShowMobileList(false); }}
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-sky-500 text-white shadow-sm hover:bg-sky-600 transition-colors"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -112,7 +114,7 @@ export default function GroupsPage() {
           {filteredGroups.length === 0 ? (
             <div className="p-8 text-center text-slate-400 space-y-2">
               <p className="text-sm font-medium">No groups found</p>
-              <Button size="sm" variant="ghost" onClick={() => setView('create')}>Create one</Button>
+              <Button size="sm" variant="ghost" onClick={() => { setView('create'); setShowMobileList(false); }}>Create one</Button>
             </div>
           ) : (
             filteredGroups.map(group => (
@@ -130,12 +132,18 @@ export default function GroupsPage() {
       </aside>
 
       {/* Column 3: Main Area */}
-      <section className="flex-1 h-screen flex flex-col bg-white/95 relative overflow-hidden">
+      <section className={`flex-1 h-full flex flex-col bg-white/95 relative overflow-hidden ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
         {view === 'chat' && currentConversation ? (
           <>
             {/* Chat Header */}
-            <header className="h-[72px] px-6 flex items-center justify-between border-b border-slate-100 bg-white/80 backdrop-blur-md z-10">
-              <div className="flex items-center gap-3">
+            <header className="h-[60px] md:h-[72px] px-4 md:px-6 flex items-center justify-between border-b border-slate-100 bg-white/80 backdrop-blur-md z-10">
+              <div className="flex items-center gap-2 md:gap-3">
+                <button
+                  onClick={() => setShowMobileList(true)}
+                  className="md:hidden p-1.5 -ml-1.5 text-slate-400 hover:text-sky-500 rounded-lg"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
+                </button>
                 <Avatar name={currentConversation.name} src={currentConversation.avatar} size="md" />
                 <div>
                   <h3 className="font-bold text-slate-800">{currentConversation.name}</h3>
@@ -189,16 +197,22 @@ export default function GroupsPage() {
           </>
         ) : view === 'create' ? (
           <div className="flex-1 overflow-y-auto p-12 max-w-2xl mx-auto w-full">
-            <header className="mb-8">
-              <h2 className="text-3xl font-bold text-slate-800 tracking-tight">Create New Group</h2>
+            <header className="mb-6 md:mb-8 flex items-start gap-3">
+              <button onClick={() => { setView('chat'); setShowMobileList(true); }} className="md:hidden mt-1 p-1 -ml-2 text-slate-400 hover:text-sky-500">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
+              </button>
+              <div>
+                <h2 className="text-2xl md:text-3xl font-bold text-slate-800 tracking-tight">Create New Group</h2>
               <p className="text-slate-500 mt-1">Bring your bots together in one conversation.</p>
+            </div>
             </header>
             
             <CreateGroupForm
-              onCancel={() => setView('chat')}
+              onCancel={() => { setView('chat'); setShowMobileList(true); }}
               onSuccess={() => {
                 void refreshGroups()
                 setView('chat')
+                setShowMobileList(false)
               }}
             />
           </div>
@@ -219,7 +233,7 @@ export default function GroupsPage() {
         {/* Column 4: Right Drawer */}
         {selectedGroup && (
           <div 
-            className={`absolute right-0 top-0 h-full w-[320px] bg-white shadow-2xl border-l border-slate-100 transition-transform duration-300 z-20 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`}
+            className={`absolute right-0 top-0 h-full w-full md:w-[320px] bg-white shadow-2xl md:border-l border-slate-100 transition-transform duration-300 z-20 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`}
           >
             <GroupDrawer
               group={selectedGroup}

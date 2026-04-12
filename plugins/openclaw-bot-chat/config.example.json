@@ -1,15 +1,15 @@
 {
   "botChatBaseUrl": "http://127.0.0.1:8080",
+  "mqttTcpUrl": "mqtt://127.0.0.1:1883",
   "openClawAgentHandler": "./examples/openai-compatible-handler.cjs",
   "defaultBot": "test-bot",
-  "heartbeatIntervalMs": 15000,
   "httpTimeoutMs": 15000,
   "reconnectBaseDelayMs": 1000,
   "reconnectMaxDelayMs": 30000,
   "stateDir": "./data",
   "bots": {
     "test-bot": {
-      "accessKey": "ocbk_replace_with_your_service_access_key",
+      "accessKey": "ocbk_replace_with_your_bot_key",
       "enabled": true
     }
   }

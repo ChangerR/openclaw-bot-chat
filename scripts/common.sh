@@ -48,6 +48,9 @@ FRONTEND_PORT_MAPPING=127.0.0.1:4173:3000
 BACKEND_PORT_MAPPING=127.0.0.1:8080:8080
 POSTGRES_PORT_MAPPING=127.0.0.1:5432:5432
 REDIS_PORT_MAPPING=127.0.0.1:6379:6379
+MQTT_TCP_PORT_MAPPING=127.0.0.1:1883:1883
+MQTT_WS_PORT_MAPPING=127.0.0.1:8083:8083
+EMQX_DASHBOARD_PORT_MAPPING=127.0.0.1:18083:18083
 
 # Backend runtime
 APP_MODE=release
@@ -57,6 +60,8 @@ DATABASE_PASSWORD=$database_password
 DATABASE_DBNAME=openclaw_bot_chat
 MQTT_USERNAME=openclaw_backend
 MQTT_PASSWORD=$mqtt_password
+MQTT_TCP_PUBLIC_URL=mqtt://127.0.0.1:1883
+MQTT_WS_PUBLIC_URL=\${PUBLIC_SCHEME}://\${DOMAIN}/mqtt
 JWT_SECRET=$jwt_secret
 EOF
 
@@ -76,10 +81,20 @@ load_env_file() {
   : "${DOMAIN:=test-claw.changer.site}"
   : "${PUBLIC_SCHEME:=http}"
   : "${NEXT_PUBLIC_API_URL:=${PUBLIC_SCHEME}://${DOMAIN}}"
-  : "${NEXT_PUBLIC_API_WS_HOST:=${DOMAIN}}"
+  : "${MQTT_TCP_PUBLIC_URL:=mqtt://127.0.0.1:1883}"
+  if [[ -z "${MQTT_WS_PUBLIC_URL:-}" ]]; then
+    local ws_scheme
+    if [[ "$PUBLIC_SCHEME" == "https" ]]; then
+      ws_scheme="wss"
+    else
+      ws_scheme="ws"
+    fi
+    MQTT_WS_PUBLIC_URL="${ws_scheme}://${DOMAIN}/mqtt"
+  fi
 
   export NEXT_PUBLIC_API_URL
-  export NEXT_PUBLIC_API_WS_HOST
+  export MQTT_TCP_PUBLIC_URL
+  export MQTT_WS_PUBLIC_URL
 }
 
 parse_frontend_mapping() {

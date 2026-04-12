@@ -13,19 +13,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/openclaw-bot-chat/backend/internal/model"
-	"github.com/openclaw-bot-chat/backend/internal/mqtt"
 	"github.com/openclaw-bot-chat/backend/internal/repository"
 )
 
 // MessageService handles message operations
 type MessageService struct {
-	msgRepo    *repository.MessageRepository
-	botRepo    *repository.BotRepository
-	groupRepo  *repository.GroupRepository
-	assetRepo  *repository.AssetRepository
-	auditRepo  *repository.AuditLogRepository
-	assetSvc   *AssetService
-	mqttClient *mqtt.Client
+	msgRepo   *repository.MessageRepository
+	botRepo   *repository.BotRepository
+	groupRepo *repository.GroupRepository
+	assetRepo *repository.AssetRepository
+	auditRepo *repository.AuditLogRepository
+	assetSvc  *AssetService
 }
 
 // NewMessageService creates a new message service
@@ -47,10 +45,6 @@ func NewMessageService(
 	}
 }
 
-func (s *MessageService) SetMQTTClient(client *mqtt.Client) {
-	s.mqttClient = client
-}
-
 // HandleIncomingMessage persists a raw MQTT payload received by the transport layer.
 func (s *MessageService) HandleIncomingMessage(topic string, payload []byte) error {
 	var msgPayload MessagePayload
@@ -62,6 +56,12 @@ func (s *MessageService) HandleIncomingMessage(topic string, payload []byte) err
 	defer cancel()
 
 	normalized := normalizeIncomingMessage(topic, msgPayload)
+	if declared := NormalizeConversationReference(firstNonEmpty(msgPayload.ConversationID, msgPayload.Topic)); declared != "" && declared != normalized.conversationID {
+		return fmt.Errorf("message conversation_id does not match MQTT topic")
+	}
+	if err := validateNormalizedMessage(normalized); err != nil {
+		return fmt.Errorf("validate MQTT message: %w", err)
+	}
 	if err := s.enrichNormalizedMessage(ctx, &normalized); err != nil {
 		return fmt.Errorf("enrich MQTT message: %w", err)
 	}
@@ -129,6 +129,29 @@ func (s *MessageService) GetConversationsForBot(ctx context.Context, botID uuid.
 	return s.msgRepo.GetConversationsForBot(ctx, botID, limit)
 }
 
+func (s *MessageService) GetConversationListForBot(ctx context.Context, botID uuid.UUID, limit int) ([]ConversationInfo, error) {
+	ids, err := s.GetConversationsForBot(ctx, botID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]ConversationInfo, 0, len(ids))
+	for _, id := range ids {
+		msgs, queryErr := s.msgRepo.GetByConversationID(ctx, id, 1, 0)
+		if queryErr != nil || len(msgs) == 0 {
+			continue
+		}
+
+		result = append(result, ConversationInfo{
+			ConversationID: id,
+			LastMessage:    s.hydrateMessage(ctx, &msgs[0]),
+			UnreadCount:    0,
+		})
+	}
+
+	return result, nil
+}
+
 // ConversationInfo holds summary info for a conversation
 type ConversationInfo struct {
 	ConversationID string         `json:"conversation_id"`
@@ -159,22 +182,24 @@ func (s *MessageService) GetConversationList(ctx context.Context, userID uuid.UU
 
 // MessagePayload represents an MQTT message payload
 type MessagePayload struct {
-	ID         string                 `json:"id"`
-	MessageID  string                 `json:"message_id"`
-	From       *MessagePeerPayload    `json:"from,omitempty"`
-	To         *MessagePeerPayload    `json:"to,omitempty"`
-	ContentRaw json.RawMessage        `json:"content,omitempty"`
-	Timestamp  int64                  `json:"timestamp"`
-	Seq        int64                  `json:"seq,omitempty"`
-	SenderType string                 `json:"sender_type"`
-	SenderID   string                 `json:"sender_id,omitempty"`
-	SenderName string                 `json:"sender_name,omitempty"`
-	BotID      string                 `json:"bot_id,omitempty"`
-	GroupID    string                 `json:"group_id,omitempty"`
-	MsgType    string                 `json:"msg_type"`
-	Body       string                 `json:"body,omitempty"`
-	Metadata   map[string]interface{} `json:"metadata,omitempty"`
-	Meta       map[string]interface{} `json:"meta,omitempty"`
+	ID             string                 `json:"id"`
+	MessageID      string                 `json:"message_id"`
+	Topic          string                 `json:"topic,omitempty"`
+	ConversationID string                 `json:"conversation_id,omitempty"`
+	From           *MessagePeerPayload    `json:"from,omitempty"`
+	To             *MessagePeerPayload    `json:"to,omitempty"`
+	ContentRaw     json.RawMessage        `json:"content,omitempty"`
+	Timestamp      int64                  `json:"timestamp"`
+	Seq            int64                  `json:"seq,omitempty"`
+	SenderType     string                 `json:"sender_type"`
+	SenderID       string                 `json:"sender_id,omitempty"`
+	SenderName     string                 `json:"sender_name,omitempty"`
+	BotID          string                 `json:"bot_id,omitempty"`
+	GroupID        string                 `json:"group_id,omitempty"`
+	MsgType        string                 `json:"msg_type"`
+	Body           string                 `json:"body,omitempty"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	Meta           map[string]interface{} `json:"meta,omitempty"`
 }
 
 type MessagePeerPayload struct {
@@ -188,38 +213,6 @@ type MessageContentPayload struct {
 	Type string                 `json:"type"`
 	Body string                 `json:"body"`
 	Meta map[string]interface{} `json:"meta,omitempty"`
-}
-
-type SendMessageRequest struct {
-	ID                  string                 `json:"id"`
-	ConversationID      string                 `json:"conversationId"`
-	ConversationIDSnake string                 `json:"conversation_id"`
-	Topic               string                 `json:"topic"`
-	From                *MessagePeerPayload    `json:"from,omitempty"`
-	To                  *MessagePeerPayload    `json:"to,omitempty"`
-	ContentRaw          json.RawMessage        `json:"content,omitempty"`
-	FromType            string                 `json:"fromType"`
-	FromTypeSnake       string                 `json:"from_type"`
-	FromID              string                 `json:"fromId"`
-	FromIDSnake         string                 `json:"from_id"`
-	FromBotID           string                 `json:"fromBotId"`
-	FromBotIDSnake      string                 `json:"from_bot_id"`
-	BotID               string                 `json:"botId"`
-	BotIDSnake          string                 `json:"bot_id"`
-	ToType              string                 `json:"toType"`
-	ToTypeSnake         string                 `json:"to_type"`
-	ToID                string                 `json:"toId"`
-	ToIDSnake           string                 `json:"to_id"`
-	ToBotID             string                 `json:"toBotId"`
-	ToBotIDSnake        string                 `json:"to_bot_id"`
-	ToGroupID           string                 `json:"toGroupId"`
-	ToGroupIDSnake      string                 `json:"to_group_id"`
-	ContentType         string                 `json:"contentType"`
-	ContentTypeSnake    string                 `json:"content_type"`
-	Body                string                 `json:"body"`
-	Meta                map[string]interface{} `json:"meta,omitempty"`
-	Metadata            map[string]interface{} `json:"metadata,omitempty"`
-	Timestamp           int64                  `json:"timestamp"`
 }
 
 type normalizedMessage struct {
@@ -239,84 +232,6 @@ type normalizedMessage struct {
 }
 
 const mentionedBotIDsMetaKey = "mentioned_bot_ids"
-
-// NewMQTTMessage creates a Message model from an MQTT payload.
-func NewMQTTMessage(topic string, payload MessagePayload) (*model.Message, error) {
-	normalized := normalizeIncomingMessage(topic, payload)
-	normalized.conversationID = topic
-	return buildMessageModel(normalized), nil
-}
-
-func (s *MessageService) SendMessage(ctx context.Context, userID uuid.UUID, req SendMessageRequest) (*model.Message, error) {
-	normalized, err := req.normalize(userID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.authorizeUserSendNormalized(ctx, userID, normalized); err != nil {
-		return nil, err
-	}
-	if err := s.enrichNormalizedMessage(ctx, &normalized); err != nil {
-		return nil, err
-	}
-	if err := s.prepareNormalizedMessage(ctx, &normalized); err != nil {
-		return nil, err
-	}
-
-	message := buildMessageModel(normalized)
-
-	if err := s.SaveMessage(ctx, message); err != nil {
-		return nil, err
-	}
-
-	s.auditRepo.CreateAsync(&model.AuditLog{
-		UserID:       &userID,
-		BotID:        message.BotID,
-		GroupID:      message.GroupID,
-		Action:       string(model.AuditActionSendMessage),
-		ResponseCode: intPtr(200),
-	})
-
-	if s.mqttClient != nil && s.mqttClient.IsConnected() {
-		_ = s.mqttClient.Publish(normalized.conversationID, buildRealtimePayload(message), 1)
-	}
-
-	return s.hydrateMessage(ctx, message), nil
-}
-
-func (s *MessageService) SendBotMessage(ctx context.Context, botID uuid.UUID, req SendMessageRequest) (*model.Message, error) {
-	normalized, err := req.normalizeForBot(botID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.authorizeBotSendNormalized(ctx, botID, normalized); err != nil {
-		return nil, err
-	}
-	if err := s.enrichNormalizedMessage(ctx, &normalized); err != nil {
-		return nil, err
-	}
-	if err := s.prepareNormalizedMessage(ctx, &normalized); err != nil {
-		return nil, err
-	}
-
-	message := buildMessageModel(normalized)
-
-	if err := s.SaveMessage(ctx, message); err != nil {
-		return nil, err
-	}
-
-	s.auditRepo.CreateAsync(&model.AuditLog{
-		BotID:        &botID,
-		GroupID:      message.GroupID,
-		Action:       string(model.AuditActionSendMessage),
-		ResponseCode: intPtr(200),
-	})
-
-	if s.mqttClient != nil && s.mqttClient.IsConnected() {
-		_ = s.mqttClient.Publish(normalized.conversationID, buildRealtimePayload(message), 1)
-	}
-
-	return s.hydrateMessage(ctx, message), nil
-}
 
 func (s *MessageService) ListGroupsForBot(ctx context.Context, botID uuid.UUID) ([]model.Group, error) {
 	return s.groupRepo.ListByBot(ctx, botID)
@@ -352,10 +267,11 @@ func NormalizeConversationReference(raw string) string {
 }
 
 func normalizeIncomingMessage(topic string, payload MessagePayload) normalizedMessage {
-	route := parseMessageRoute(topic)
+	conversationID := NormalizeConversationReference(firstNonEmpty(topic, payload.ConversationID, payload.Topic))
+	route := parseMessageRoute(conversationID)
 	normalized := normalizedMessage{
 		messageID:      firstNonEmpty(payload.ID, payload.MessageID),
-		conversationID: topic,
+		conversationID: conversationID,
 		senderType:     payload.SenderType,
 		senderID:       payload.SenderID,
 		senderName:     payload.SenderName,
@@ -419,251 +335,6 @@ func normalizeIncomingMessage(topic string, payload MessagePayload) normalizedMe
 	return normalized
 }
 
-func (r SendMessageRequest) normalize(userID uuid.UUID) (normalizedMessage, error) {
-	conversationID := NormalizeConversationReference(firstNonEmpty(r.ConversationID, r.ConversationIDSnake))
-	route := parseMessageRoute(conversationID)
-
-	senderType := firstNonEmpty(r.FromType, r.FromTypeSnake)
-	senderID := firstNonEmpty(
-		r.FromID,
-		r.FromIDSnake,
-		r.FromBotID,
-		r.FromBotIDSnake,
-		r.BotID,
-		r.BotIDSnake,
-	)
-	senderName := ""
-	if r.From != nil {
-		senderType = firstNonEmpty(r.From.Type, senderType)
-		senderID = firstNonEmpty(r.From.ID, senderID)
-		senderName = firstNonEmpty(r.From.Name, senderName)
-	}
-	if senderType == "" {
-		senderType = string(model.SenderTypeUser)
-	}
-	if senderID == "" {
-		senderID = userID.String()
-	}
-
-	receiverType := firstNonEmpty(r.ToType, r.ToTypeSnake)
-	if receiverType == "" {
-		switch {
-		case firstNonEmpty(r.ToGroupID, r.ToGroupIDSnake) != "":
-			receiverType = "group"
-		case firstNonEmpty(r.ToBotID, r.ToBotIDSnake) != "":
-			receiverType = "bot"
-		case route.isDirect():
-			receiverType, _, _ = route.counterparty(senderType, senderID)
-		}
-	}
-	receiverID := firstNonEmpty(
-		r.ToID,
-		r.ToIDSnake,
-		r.ToBotID,
-		r.ToBotIDSnake,
-		r.ToGroupID,
-		r.ToGroupIDSnake,
-	)
-	if r.To != nil {
-		receiverType = firstNonEmpty(r.To.Type, receiverType)
-		receiverID = firstNonEmpty(r.To.ID, receiverID)
-	}
-	if receiverID == "" && route.isDirect() {
-		_, receiverID, _ = route.counterparty(senderType, senderID)
-	}
-	if receiverType == "" || receiverID == "" {
-		return normalizedMessage{}, fmt.Errorf("missing message target")
-	}
-
-	contentType := firstNonEmpty(r.ContentType, r.ContentTypeSnake)
-	body := r.Body
-	meta := firstNonEmptyMap(r.Meta, r.Metadata)
-	contentPayload, legacyText := decodeContentPayload(r.ContentRaw)
-	if contentPayload != nil {
-		contentType = firstNonEmpty(contentPayload.Type, contentType)
-		body = firstNonEmpty(contentPayload.Body, body)
-		meta = firstNonEmptyMap(contentPayload.Meta, meta)
-	}
-	if body == "" {
-		body = legacyText
-	}
-	body = normalizeMessageBody(contentType, body, meta)
-	if contentType == "" {
-		contentType = string(model.MsgTypeText)
-	}
-	if body == "" {
-		return normalizedMessage{}, fmt.Errorf("message body is required")
-	}
-
-	if conversationID == "" {
-		conversationID = buildRealtimeConversationID(senderType, senderID, receiverType, receiverID)
-	}
-
-	normalized := normalizedMessage{
-		messageID:      firstNonEmpty(r.ID, uuid.New().String()),
-		conversationID: conversationID,
-		senderType:     senderType,
-		senderID:       senderID,
-		senderName:     senderName,
-		receiverType:   receiverType,
-		receiverID:     receiverID,
-		contentType:    contentType,
-		body:           body,
-		meta:           meta,
-		timestamp:      r.Timestamp,
-	}
-	if normalized.senderType == string(model.SenderTypeBot) {
-		normalized.botID = normalized.senderID
-	} else if normalized.receiverType == "bot" {
-		normalized.botID = normalized.receiverID
-	}
-	if normalized.receiverType == "group" {
-		normalized.groupID = normalized.receiverID
-	}
-
-	return normalized, nil
-}
-
-func (r SendMessageRequest) normalizeForBot(botID uuid.UUID) (normalizedMessage, error) {
-	conversationID := NormalizeConversationReference(firstNonEmpty(r.Topic, r.ConversationID, r.ConversationIDSnake))
-	route := parseMessageRoute(conversationID)
-
-	senderType := firstNonEmpty(r.FromType, r.FromTypeSnake)
-	senderID := firstNonEmpty(
-		r.FromID,
-		r.FromIDSnake,
-		r.FromBotID,
-		r.FromBotIDSnake,
-		r.BotID,
-		r.BotIDSnake,
-	)
-	senderName := ""
-	if r.From != nil {
-		senderType = firstNonEmpty(r.From.Type, senderType)
-		senderID = firstNonEmpty(r.From.ID, senderID)
-		senderName = firstNonEmpty(r.From.Name, senderName)
-	}
-	if senderType == "" {
-		senderType = string(model.SenderTypeBot)
-	}
-	if senderID == "" {
-		senderID = botID.String()
-	}
-
-	receiverType := firstNonEmpty(r.ToType, r.ToTypeSnake)
-	if receiverType == "" {
-		switch {
-		case firstNonEmpty(r.ToGroupID, r.ToGroupIDSnake) != "":
-			receiverType = "group"
-		case firstNonEmpty(r.ToBotID, r.ToBotIDSnake) != "":
-			receiverType = "bot"
-		case route.isDirect():
-			receiverType, _, _ = route.counterparty(senderType, senderID)
-		}
-	}
-	receiverID := firstNonEmpty(
-		r.ToID,
-		r.ToIDSnake,
-		r.ToBotID,
-		r.ToBotIDSnake,
-		r.ToGroupID,
-		r.ToGroupIDSnake,
-	)
-	if r.To != nil {
-		receiverType = firstNonEmpty(r.To.Type, receiverType)
-		receiverID = firstNonEmpty(r.To.ID, receiverID)
-	}
-	if receiverID == "" && route.isDirect() {
-		_, receiverID, _ = route.counterparty(senderType, senderID)
-	}
-	if receiverType == "" || receiverID == "" {
-		return normalizedMessage{}, fmt.Errorf("missing message target")
-	}
-
-	contentType := firstNonEmpty(r.ContentType, r.ContentTypeSnake)
-	body := r.Body
-	meta := firstNonEmptyMap(r.Meta, r.Metadata)
-	contentPayload, legacyText := decodeContentPayload(r.ContentRaw)
-	if contentPayload != nil {
-		contentType = firstNonEmpty(contentPayload.Type, contentType)
-		body = firstNonEmpty(contentPayload.Body, body)
-		meta = firstNonEmptyMap(contentPayload.Meta, meta)
-	}
-	if body == "" {
-		body = legacyText
-	}
-	body = normalizeMessageBody(contentType, body, meta)
-	if contentType == "" {
-		contentType = string(model.MsgTypeText)
-	}
-	if body == "" {
-		return normalizedMessage{}, fmt.Errorf("message body is required")
-	}
-
-	if conversationID == "" {
-		conversationID = buildRealtimeConversationID(senderType, senderID, receiverType, receiverID)
-	}
-
-	normalized := normalizedMessage{
-		messageID:      firstNonEmpty(r.ID, uuid.New().String()),
-		conversationID: conversationID,
-		senderType:     senderType,
-		senderID:       senderID,
-		senderName:     senderName,
-		receiverType:   receiverType,
-		receiverID:     receiverID,
-		contentType:    contentType,
-		body:           body,
-		meta:           meta,
-		timestamp:      r.Timestamp,
-	}
-	if normalized.senderType == string(model.SenderTypeBot) {
-		normalized.botID = normalized.senderID
-	} else if normalized.receiverType == "bot" {
-		normalized.botID = normalized.receiverID
-	}
-	if normalized.receiverType == "group" {
-		normalized.groupID = normalized.receiverID
-	}
-
-	return normalized, nil
-}
-
-func buildRealtimePayload(message *model.Message) map[string]interface{} {
-	route := parseMessageRoute(message.ConversationID)
-	senderID := ""
-	if message.SenderID != nil {
-		senderID = message.SenderID.String()
-	}
-	if senderID == "" && message.BotID != nil && message.SenderType == model.SenderTypeBot {
-		senderID = message.BotID.String()
-	}
-
-	from := map[string]interface{}{
-		"type": string(message.SenderType),
-		"id":   senderID,
-	}
-	if message.SenderName != nil {
-		from["name"] = *message.SenderName
-	}
-
-	toType, toID := "", ""
-	if route.groupID != "" {
-		toType, toID = "group", route.groupID
-	} else {
-		toType, toID, _ = route.counterparty(string(message.SenderType), senderID)
-	}
-
-	return map[string]interface{}{
-		"id":        message.MessageID.String(),
-		"from":      from,
-		"to":        map[string]interface{}{"type": toType, "id": toID},
-		"content":   map[string]interface{}{"type": string(message.MsgType), "body": message.Content, "meta": copyMapFromJSON(message.Metadata)},
-		"timestamp": message.CreatedAt.Unix(),
-		"seq":       message.Seq,
-	}
-}
-
 func buildMessageModel(normalized normalizedMessage) *model.Message {
 	msgID, err := uuid.Parse(normalized.messageID)
 	if err != nil {
@@ -713,7 +384,10 @@ func (s *MessageService) enrichNormalizedMessage(ctx context.Context, normalized
 		return err
 	}
 
-	mentionedBotIDs := extractMentionedBotIDs(normalized.body, botMembers)
+	mentionedBotIDs := mergeMentionedBotIDs(
+		readMentionedBotIDsMeta(normalized.meta),
+		extractMentionedBotIDs(normalized.body, botMembers),
+	)
 	if len(mentionedBotIDs) == 0 {
 		if normalized.meta != nil {
 			delete(normalized.meta, mentionedBotIDsMetaKey)
@@ -726,6 +400,53 @@ func (s *MessageService) enrichNormalizedMessage(ctx context.Context, normalized
 	}
 	normalized.meta[mentionedBotIDsMetaKey] = mentionedBotIDs
 	return nil
+}
+
+func readMentionedBotIDsMeta(meta map[string]interface{}) []string {
+	if len(meta) == 0 {
+		return nil
+	}
+
+	raw, ok := meta[mentionedBotIDsMetaKey]
+	if !ok {
+		return nil
+	}
+
+	switch typed := raw.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case []interface{}:
+		mentioned := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if value, ok := item.(string); ok && strings.TrimSpace(value) != "" {
+				mentioned = append(mentioned, strings.TrimSpace(value))
+			}
+		}
+		return mentioned
+	default:
+		return nil
+	}
+}
+
+func mergeMentionedBotIDs(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	merged := make([]string, 0)
+
+	for _, items := range groups {
+		for _, item := range items {
+			value := strings.TrimSpace(item)
+			if value == "" {
+				continue
+			}
+			if _, exists := seen[value]; exists {
+				continue
+			}
+			seen[value] = struct{}{}
+			merged = append(merged, value)
+		}
+	}
+
+	return merged
 }
 
 func (s *MessageService) prepareNormalizedMessage(ctx context.Context, normalized *normalizedMessage) error {

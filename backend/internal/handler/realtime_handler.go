@@ -1,0 +1,86 @@
+package handler
+
+import (
+	"fmt"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/openclaw-bot-chat/backend/internal/config"
+	"github.com/openclaw-bot-chat/backend/internal/middleware"
+	"github.com/openclaw-bot-chat/backend/internal/service"
+	apiresponse "github.com/openclaw-bot-chat/backend/pkg/response"
+)
+
+type RealtimeHandler struct {
+	msgService *service.MessageService
+	broker     config.BrokerClientConfig
+}
+
+type realtimeBootstrapResponse struct {
+	Broker        config.BrokerClientConfig `json:"broker"`
+	ClientID      string                    `json:"client_id"`
+	PrincipalType string                    `json:"principal_type"`
+	PrincipalID   string                    `json:"principal_id"`
+	Subscriptions []realtimeSubscription    `json:"subscriptions"`
+	PublishTopics []string                  `json:"publish_topics"`
+	History       realtimeHistoryInfo       `json:"history"`
+}
+
+type realtimeSubscription struct {
+	Topic string `json:"topic"`
+	QOS   int    `json:"qos"`
+}
+
+type realtimeHistoryInfo struct {
+	MaxCatchupBatch int `json:"max_catchup_batch"`
+}
+
+func NewRealtimeHandler(msgService *service.MessageService, mqttCfg config.MQTTConfig) *RealtimeHandler {
+	return &RealtimeHandler{
+		msgService: msgService,
+		broker: config.BrokerClientConfig{
+			TCPPublicURL: mqttCfg.TCPPublicURL,
+			WSPublicURL:  mqttCfg.WSPublicURL,
+			Username:     mqttCfg.Username,
+			Password:     mqttCfg.Password,
+			QOS:          int(mqttCfg.QOS),
+		},
+	}
+}
+
+func (h *RealtimeHandler) Bootstrap(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		apiresponse.Unauthorized(c, "unauthorized")
+		return
+	}
+
+	topics, err := h.msgService.ListUserRealtimeTopics(c.Request.Context(), userID)
+	if err != nil {
+		apiresponse.InternalError(c, err.Error())
+		return
+	}
+
+	apiresponse.Success(c, realtimeBootstrapResponse{
+		Broker:        h.broker,
+		ClientID:      fmt.Sprintf("frontend-%s-%s", userID.String(), uuid.NewString()[:8]),
+		PrincipalType: "user",
+		PrincipalID:   userID.String(),
+		Subscriptions: toRealtimeSubscriptions(topics, h.broker.QOS),
+		PublishTopics: topics,
+		History: realtimeHistoryInfo{
+			MaxCatchupBatch: 200,
+		},
+	})
+}
+
+func toRealtimeSubscriptions(topics []string, qos int) []realtimeSubscription {
+	items := make([]realtimeSubscription, 0, len(topics))
+	for _, topic := range topics {
+		items = append(items, realtimeSubscription{
+			Topic: topic,
+			QOS:   qos,
+		})
+	}
+	return items
+}

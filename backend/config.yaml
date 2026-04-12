@@ -32,22 +32,14 @@ mqtt:
   qos: 1
   auto_reconnect: true
   reconnect_delay: 5  # seconds
+  tcp_public_url: "mqtt://127.0.0.1:1883"
+  ws_public_url: "ws://127.0.0.1:8083/mqtt"
 
 jwt:
   secret: "your-super-secret-jwt-key-change-in-production"
   access_token_ttl: 7200     # 2 hours in seconds
   refresh_token_ttl: 604800  # 7 days in seconds
   issuer: "openclaw-bot-chat"
-
-websocket:
-  read_buffer_size: 1024
-  write_buffer_size: 1024
-  ping_interval: 30  # seconds
-  pong_timeout: 60   # seconds
-  write_timeout: 10  # seconds
-  max_message_size: 65536  # bytes
-  send_queue_size: 256
-  broadcast_queue_size: 256
 
 storage:
   provider: "cos" # cos, oss

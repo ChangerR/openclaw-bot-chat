@@ -19,7 +19,6 @@ import (
 	"github.com/openclaw-bot-chat/backend/internal/repository"
 	"github.com/openclaw-bot-chat/backend/internal/service"
 	"github.com/openclaw-bot-chat/backend/internal/storage"
-	"github.com/openclaw-bot-chat/backend/internal/websocket"
 	"github.com/openclaw-bot-chat/backend/pkg/jwt"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
@@ -109,33 +108,18 @@ func main() {
 	} else {
 		defer mqttClient.Disconnect()
 	}
-	msgService.SetMQTTClient(mqttClient)
-
-	// --- WebSocket Hub ---
-	wsHub := websocket.NewHub(mqttClient, websocket.WSConfig{
-		ReadBufferSize:     cfg.WebSocket.ReadBufferSize,
-		WriteBufferSize:    cfg.WebSocket.WriteBufferSize,
-		PingInterval:       time.Duration(cfg.WebSocket.PingInterval) * time.Second,
-		PongTimeout:        time.Duration(cfg.WebSocket.PongTimeout) * time.Second,
-		WriteTimeout:       time.Duration(cfg.WebSocket.WriteTimeout) * time.Second,
-		MaxMessageSize:     cfg.WebSocket.MaxMessageSize,
-		SendQueueSize:      cfg.WebSocket.SendQueueSize,
-		BroadcastQueueSize: cfg.WebSocket.BroadcastQueueSize,
-	}, log, msgService)
-	wsHub.AttachMQTTBridge()
-	go wsHub.Run()
-	defer wsHub.Stop()
 
 	// --- Handlers ---
 	authHandler := handler.NewAuthHandler(authService)
 	botHandler := handler.NewBotHandler(botService)
 	msgHandler := handler.NewMessageHandler(msgService)
+	realtimeHandler := handler.NewRealtimeHandler(msgService, cfg.MQTT)
 	assetHandler := handler.NewAssetHandler(assetService)
-	botRuntimeHandler := handler.NewBotRuntimeHandler(msgService)
+	botRuntimeHandler := handler.NewBotRuntimeHandler(msgService, cfg.MQTT)
 	groupHandler := handler.NewGroupHandler(groupService)
 
 	// --- Routes ---
-	setupRoutes(router, authHandler, botHandler, msgHandler, assetHandler, botRuntimeHandler, groupHandler, botService, jwtManager, wsHub, log)
+	setupRoutes(router, authHandler, botHandler, msgHandler, realtimeHandler, assetHandler, botRuntimeHandler, groupHandler, botService, jwtManager)
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%d", cfg.App.Host, cfg.App.Port)
@@ -226,13 +210,12 @@ func setupRoutes(
 	authHandler *handler.AuthHandler,
 	botHandler *handler.BotHandler,
 	msgHandler *handler.MessageHandler,
+	realtimeHandler *handler.RealtimeHandler,
 	assetHandler *handler.AssetHandler,
 	botRuntimeHandler *handler.BotRuntimeHandler,
 	groupHandler *handler.GroupHandler,
 	botService *service.BotService,
 	jwtManager *jwt.Manager,
-	wsHub *websocket.Hub,
-	log zerolog.Logger,
 ) {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -248,16 +231,11 @@ func setupRoutes(
 		auth.POST("/refresh", authHandler.Refresh)
 	}
 
-	// WebSocket accepts either a user JWT or a validated bot key.
-	api.GET("/ws", middleware.OptionalBotKeyAuth(botService), websocket.HandleWebSocket(jwtManager, wsHub, log))
-
 	botRuntime := api.Group("/bot-runtime")
 	botRuntime.Use(middleware.BotKeyAuth(botService))
 	{
 		botRuntime.GET("/bootstrap", botRuntimeHandler.Bootstrap)
-		botRuntime.POST("/messages", botRuntimeHandler.SendMessage)
-		botRuntime.POST("/heartbeat", botRuntimeHandler.Heartbeat)
-		botRuntime.GET("/dialogs/:dialog_id/messages", botRuntimeHandler.GetDialogMessages)
+		botRuntime.GET("/messages/*conversation_id", botRuntimeHandler.GetConversationMessages)
 	}
 
 	// Protected routes
@@ -282,9 +260,9 @@ func setupRoutes(
 		protected.DELETE("/bots/:id/keys/:key_id", botHandler.RevokeKey)
 
 		// Messages
+		protected.GET("/realtime/bootstrap", realtimeHandler.Bootstrap)
 		protected.GET("/messages", msgHandler.GetMessages)
 		protected.GET("/messages/*conversation_id", msgHandler.GetMessagesByConversation)
-		protected.POST("/messages", msgHandler.SendMessage)
 		protected.GET("/conversations", msgHandler.GetConversations)
 		protected.POST("/assets/image/upload-prepare", assetHandler.PrepareImageUpload)
 		protected.POST("/assets/image/complete", assetHandler.CompleteImageUpload)
