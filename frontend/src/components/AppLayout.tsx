@@ -43,16 +43,16 @@ export function PrimaryNav() {
   const { user, logout } = useAuth()
 
   return (
-    <aside className="w-[72px] h-screen bg-white/40 backdrop-blur-2xl flex flex-col items-center py-6 gap-8 border-r border-white/20">
+    <aside className="w-full h-[60px] md:w-[72px] md:h-screen bg-white/80 md:bg-white/40 backdrop-blur-2xl flex flex-row md:flex-col items-center justify-around md:justify-start py-0 md:py-6 px-4 md:px-0 gap-0 md:gap-8 border-t md:border-t-0 md:border-r border-white/20 z-50 flex-shrink-0">
       {/* Logo Placeholder / Brand */}
-      <div className="w-10 h-10 bg-sky-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-sky-200">
+      <div className="hidden md:flex w-10 h-10 bg-sky-500 rounded-xl items-center justify-center text-white shadow-lg shadow-sky-200">
         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 flex flex-col gap-4">
+      <nav className="flex-1 flex flex-row md:flex-col gap-6 md:gap-4 items-center justify-center md:justify-start">
         {navItems.map((item) => {
           const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
           return (
@@ -73,8 +73,10 @@ export function PrimaryNav() {
       </nav>
 
       {/* User / Bottom */}
-      <div className="flex flex-col gap-4 items-center">
+      <div className="flex flex-row md:flex-col gap-4 items-center">
+        <div className="hidden md:block">
         <Avatar name={user?.username || 'User'} size="sm" className="ring-2 ring-white/50" />
+        </div>
         <button
           onClick={logout}
           className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-red-500 transition-colors"
@@ -91,9 +93,9 @@ export function PrimaryNav() {
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-gradient-to-br from-[#F0F4F8] to-[#E2E8F0]">
+    <div className="flex flex-col-reverse md:flex-row h-[100dvh] w-full overflow-hidden bg-gradient-to-br from-[#F0F4F8] to-[#E2E8F0]">
       <PrimaryNav />
-      <main className="flex flex-1 overflow-hidden">
+      <main className="flex flex-1 overflow-hidden relative">
         {children}
       </main>
     </div>

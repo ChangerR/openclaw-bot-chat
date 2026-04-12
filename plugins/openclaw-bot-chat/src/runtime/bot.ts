@@ -6,6 +6,7 @@ import {
   type ResolvedBotConfig,
 } from "../config";
 import { BotChatHttpClient, BotChatHttpError } from "../client/http";
+import { BotChatMqttClient, type BotChatMqttState } from "../client/mqtt";
 import {
   createRuntimeLogger,
   isRuntimeDebugEnabled,
@@ -13,24 +14,19 @@ import {
   summarizeValue,
 } from "../logger";
 import {
-  BotChatWebSocketClient,
-  MultiBotWebSocketClient,
-} from "../client/websocket";
-import {
-  buildBotSubscriptionTopics,
   normalizeBotChatMessage,
   resolveChannelContextFromDialog,
   routeIncomingMessage,
   shouldProcessMessage,
   toBotChatOutgoingMessage,
-  toOpenClawRequest,
   toRealtimePublishPayload,
+  toOpenClawRequest,
 } from "../router/message";
 import type {
   BootstrapResponse,
   BotChatMessage,
   Checkpoint,
-  DialogInfo,
+  ConversationInfo,
   OpenClawAgent,
 } from "../types";
 import {
@@ -43,9 +39,9 @@ import { CheckpointStore } from "./checkpoint";
 import { SessionManager } from "./session";
 
 const RECENT_MESSAGE_CACHE_SIZE = 2_000;
+const DEFAULT_HISTORY_LIMIT = 200;
 
 export class OpenClawBotRuntime {
-  private readonly wsPool: MultiBotWebSocketClient;
   private readonly runtimes: ManagedBotRuntime[];
 
   constructor(
@@ -57,10 +53,8 @@ export class OpenClawBotRuntime {
       throw new Error("At least one enabled bot is required");
     }
 
-    this.wsPool = new MultiBotWebSocketClient(config.botChatBaseUrl);
     this.runtimes = enabledBots.map(
-      (botConfig) =>
-        new ManagedBotRuntime(config, botConfig, agent, this.wsPool),
+      (botConfig) => new ManagedBotRuntime(config, botConfig, agent),
     );
   }
 
@@ -73,14 +67,12 @@ export class OpenClawBotRuntime {
       }
     } catch (error) {
       await Promise.allSettled(started.map((runtime) => runtime.stop()));
-      await this.wsPool.close();
       throw error;
     }
   }
 
   async stop(): Promise<void> {
     await Promise.allSettled(this.runtimes.map((runtime) => runtime.stop()));
-    await this.wsPool.close();
   }
 }
 
@@ -90,21 +82,19 @@ class ManagedBotRuntime {
   private readonly httpClient: BotChatHttpClient;
   private readonly logger: ReturnType<typeof createRuntimeLogger>;
   private readonly sessionManager: SessionManager;
-  private readonly wsClient: BotChatWebSocketClient;
 
   private readonly processedMessages = new Map<string, number>();
   private readonly dialogQueues = new Map<string, Promise<void>>();
 
   private bootstrap?: BootstrapResponse;
   private botId?: string;
+  private mqttClient?: BotChatMqttClient;
   private stopped = false;
-  private heartbeatTimer: NodeJS.Timeout | undefined;
 
   constructor(
     private readonly config: PluginConfig,
     private readonly botConfig: ResolvedBotConfig,
     private readonly agent: OpenClawAgent,
-    wsPool: MultiBotWebSocketClient,
   ) {
     const botStateDir = path.join(
       config.stateDir,
@@ -123,37 +113,6 @@ class ManagedBotRuntime {
     this.sessionManager = new SessionManager(
       path.join(botStateDir, "sessions.json"),
     );
-    this.wsClient = wsPool.register(botConfig.key, {
-      accessKey: botConfig.accessKey,
-      heartbeatIntervalMs: config.heartbeatIntervalMs,
-      reconnectBaseDelayMs: config.reconnectBaseDelayMs,
-      reconnectMaxDelayMs: config.reconnectMaxDelayMs,
-      onError: (error) => {
-        this.logger.error("websocket.error", undefined, error);
-      },
-      onHello: () => {
-        this.logger.info("websocket.hello", {
-          sessionId: this.wsClient.getSessionId(),
-          heartbeatIntervalMs: this.wsClient.getHeartbeatIntervalMs(),
-        });
-        this.scheduleHeartbeat();
-      },
-      onMessage: async (frame) => {
-        const message = normalizeBotChatMessage(frame.payload, frame.topic);
-        if (message) {
-          await this.handleIncomingMessage(message);
-        }
-      },
-      onReconnect: async () => {
-        this.logger.warn("websocket.reconnected", {
-          sessionId: this.wsClient.getSessionId(),
-        });
-        await this.recoverPendingMessages();
-      },
-      onStateChange: (state) => {
-        this.logger.info("websocket.state_changed", { state });
-      },
-    });
   }
 
   async start(): Promise<void> {
@@ -163,48 +122,71 @@ class ManagedBotRuntime {
       stateDir: this.config.stateDir,
       botId: this.botConfig.id,
     });
+
     await this.sessionManager.load();
     await this.checkpointStore.load();
 
-    this.bootstrap = await this.loadBootstrap();
+    this.bootstrap = await this.httpClient.bootstrap();
     this.botId = this.botConfig.id ?? this.bootstrap.bot.id;
     if (!this.botId) {
-      throw new Error(
-        `${this.logPrefix()} BOT_ID is required when bootstrap does not return a bot id`,
-      );
+      throw new Error(`${this.logPrefix()} bot id is required`);
     }
-
-    await this.checkpointStore.merge(this.bootstrap.checkpoints);
-    await this.sessionManager.restoreFromCheckpoints(
-      this.bootstrap.checkpoints,
+    await this.checkpointStore.merge(
+      this.bootstrap.conversations.map((item) => toCheckpoint(item)),
     );
     this.hydrateChannelState();
 
-    const topics = buildBotSubscriptionTopics(
-      this.botId,
-      this.bootstrap.groups,
-      this.bootstrap.subscriptions,
-      this.bootstrap.dialogs,
-      this.bootstrap.transport_policy,
-    );
-    this.logger.info("runtime.bootstrap.loaded", {
-      resolvedBotId: this.botId,
-      groups: this.bootstrap.groups.length,
-      dialogs: this.bootstrap.dialogs.length,
-      subscriptions: this.bootstrap.subscriptions.length,
-      checkpoints: this.bootstrap.checkpoints.length,
-      topics: topics.length,
-    });
-    for (const topic of topics) {
-      this.wsClient.subscribe(topic);
+    const resolvedClientId = this.resolveClientId(this.bootstrap);
+    const mqttOptions = {
+      brokerUrl: this.resolveBrokerUrl(this.bootstrap),
+      clientId: resolvedClientId,
+      reconnectBaseDelayMs: this.config.reconnectBaseDelayMs,
+      reconnectMaxDelayMs: this.config.reconnectMaxDelayMs,
+      onError: (error: Error) => {
+        this.logger.error("mqtt.error", undefined, error);
+      },
+      onConnect: () => {
+        this.logger.info("mqtt.connected", {
+          clientId: resolvedClientId,
+          subscriptions: this.bootstrap?.subscriptions.length ?? 0,
+        });
+      },
+      onReconnect: async () => {
+        this.logger.warn("mqtt.reconnected", {
+          botId: this.botId,
+        });
+        await this.recoverPendingMessages();
+      },
+      onMessage: async (topic: string, payload: unknown) => {
+        const message = normalizeBotChatMessage(payload, topic);
+        if (message) {
+          await this.handleIncomingMessage(message);
+        }
+      },
+      onStateChange: (state: BotChatMqttState) => {
+        this.logger.info("mqtt.state_changed", { state });
+      },
+      ...(this.bootstrap.broker.username
+        ? { username: this.bootstrap.broker.username }
+        : {}),
+      ...(this.bootstrap.broker.password
+        ? { password: this.bootstrap.broker.password }
+        : {}),
+    };
+    const mqttClient = new BotChatMqttClient(mqttOptions);
+    this.mqttClient = mqttClient;
+
+    await mqttClient.connect();
+    const subscriptions = this.resolveSubscriptions(this.bootstrap);
+    for (const subscription of subscriptions) {
+      await mqttClient.subscribe(subscription.topic, subscription.qos);
     }
 
-    await this.wsClient.connect();
-    this.scheduleHeartbeat();
     await this.recoverPendingMessages();
     this.logger.info("runtime.started", {
       resolvedBotId: this.botId,
-      sessionId: this.wsClient.getSessionId(),
+      subscriptions: subscriptions.length,
+      publishTopics: this.bootstrap.publish_topics.length,
     });
   }
 
@@ -214,47 +196,87 @@ class ManagedBotRuntime {
     }
     this.stopped = true;
 
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = undefined;
-    }
-
     await this.checkpointStore.flush();
     await this.sessionManager.flush();
-    await this.wsClient.close();
+    await this.mqttClient?.close();
     this.logger.info("runtime.stopped", {
       resolvedBotId: this.botId,
-      sessionId: this.wsClient.getSessionId(),
     });
   }
 
-  private async loadBootstrap(): Promise<BootstrapResponse> {
-    try {
-      return await this.httpClient.bootstrap();
-    } catch (error) {
-      if (error instanceof BotChatHttpError && error.status === 404) {
-        if (!this.botConfig.id) {
-          throw new Error(
-            `${this.logPrefix()} bootstrap endpoint is unavailable and bot id is not configured`,
-          );
-        }
-        return {
-          bot: {
-            id: this.botConfig.id,
-          },
-          groups: [],
-          dialogs: [],
-          subscriptions: [],
-          checkpoints: [],
-          transport_policy: {
-            heartbeat_interval_ms: this.config.heartbeatIntervalMs,
-            base_reconnect_delay_ms: this.config.reconnectBaseDelayMs,
-            max_reconnect_delay_ms: this.config.reconnectMaxDelayMs,
-          },
-        };
-      }
-      throw error;
+  private resolveBrokerUrl(bootstrap: BootstrapResponse): string {
+    if (this.config.mqttTcpUrl) {
+      return this.config.mqttTcpUrl;
     }
+    if (bootstrap.broker.tcp_url) {
+      return bootstrap.broker.tcp_url;
+    }
+    throw new Error(`${this.logPrefix()} bootstrap broker.tcp_url is required`);
+  }
+
+  private resolveClientId(bootstrap: BootstrapResponse): string {
+    const template = bootstrap.client_id.trim();
+    if (!template) {
+      throw new Error(`${this.logPrefix()} bootstrap client_id is required`);
+    }
+    if (!this.botId) {
+      return template;
+    }
+
+    return template
+      .replaceAll("{bot_id}", this.botId)
+      .replaceAll("${bot_id}", this.botId);
+  }
+
+  private resolveSubscriptions(
+    bootstrap: BootstrapResponse,
+  ): Array<{ topic: string; qos: number }> {
+    const qos = bootstrap.broker.qos ?? 1;
+    const topics = new Map<string, number>();
+
+    for (const subscription of bootstrap.subscriptions) {
+      if (!subscription.topic) {
+        continue;
+      }
+      topics.set(subscription.topic, subscription.qos ?? qos);
+    }
+
+    const expectedTopics = new Set<string>();
+    for (const group of bootstrap.groups) {
+      if (group.topic) {
+        expectedTopics.add(group.topic);
+        continue;
+      }
+      if (group.id) {
+        expectedTopics.add(`chat/group/${group.id}`);
+      }
+    }
+    for (const conversation of bootstrap.conversations) {
+      const topic = conversation.topic ?? conversation.conversation_id;
+      if (topic) {
+        expectedTopics.add(topic);
+      }
+    }
+
+    const autoAdded: string[] = [];
+    for (const topic of expectedTopics) {
+      if (topics.has(topic)) {
+        continue;
+      }
+      topics.set(topic, qos);
+      autoAdded.push(topic);
+    }
+
+    if (autoAdded.length > 0) {
+      this.logger.warn("mqtt.subscription.autofill", {
+        autoAddedTopics: autoAdded,
+      });
+    }
+
+    return [...topics.entries()].map(([topic, topicQos]) => ({
+      topic,
+      qos: topicQos,
+    }));
   }
 
   private hydrateChannelState(): void {
@@ -263,8 +285,8 @@ class ManagedBotRuntime {
       return;
     }
 
-    for (const dialog of this.bootstrap?.dialogs ?? []) {
-      this.trackDialog(dialog, botId);
+    for (const conversation of this.bootstrap?.conversations ?? []) {
+      this.trackDialog(toDialogInfo(conversation), botId);
     }
 
     for (const [dialogId, sessionId] of this.sessionManager.entries()) {
@@ -291,13 +313,19 @@ class ManagedBotRuntime {
     }
     if (!shouldProcessMessage(message, this.botId)) {
       if (isRuntimeDebugEnabled()) {
-        this.logger.debug("message.skipped.filtered", this.summarizeIncomingMessage(message));
+        this.logger.debug(
+          "message.skipped.filtered",
+          this.summarizeIncomingMessage(message),
+        );
       }
       return;
     }
     if (this.isMessageProcessed(message.message_id)) {
       if (isRuntimeDebugEnabled()) {
-        this.logger.debug("message.skipped.duplicate", this.summarizeIncomingMessage(message));
+        this.logger.debug(
+          "message.skipped.duplicate",
+          this.summarizeIncomingMessage(message),
+        );
       }
       return;
     }
@@ -404,70 +432,19 @@ class ManagedBotRuntime {
     sourceMessage: BotChatMessage,
     botId: string,
   ): Promise<void> {
-    const startedAt = Date.now();
-    this.logger.debug("reply.dispatch.start", {
-      sourceMessageId: sourceMessage.message_id,
-      dialogId: sourceMessage.dialog_id,
-      replyMessageId: outgoing.message_id,
-      topic: outgoing.topic,
-      contentType: outgoing.content_type,
-      bodyPreview: previewText(outgoing.body),
-    });
-
-    try {
-      await this.httpClient.sendMessage(outgoing);
-      this.logger.info("reply.dispatch.http_success", {
-        sourceMessageId: sourceMessage.message_id,
-        dialogId: sourceMessage.dialog_id,
-        replyMessageId: outgoing.message_id,
-        durationMs: Date.now() - startedAt,
-      });
-      return;
-    } catch (error) {
-      const shouldFallback =
-        error instanceof BotChatHttpError &&
-        (error.status === 404 || error.status === 405 || error.status >= 500);
-
-      if (!shouldFallback) {
-        this.logger.error(
-          "reply.dispatch.http_failed",
-          {
-            sourceMessageId: sourceMessage.message_id,
-            dialogId: sourceMessage.dialog_id,
-            replyMessageId: outgoing.message_id,
-            durationMs: Date.now() - startedAt,
-            status: error instanceof BotChatHttpError ? error.status : undefined,
-            responseBody:
-              error instanceof BotChatHttpError
-                ? summarizeValue(error.responseBody)
-                : undefined,
-          },
-          error,
-        );
-        throw error;
-      }
-
-      this.logger.warn("reply.dispatch.http_fallback", {
-        sourceMessageId: sourceMessage.message_id,
-        dialogId: sourceMessage.dialog_id,
-        replyMessageId: outgoing.message_id,
-        durationMs: Date.now() - startedAt,
-        status: error.status,
-        responseBody: summarizeValue(error.responseBody),
-      });
+    const mqttClient = this.mqttClient;
+    if (!mqttClient) {
+      throw new Error("mqtt client is not initialized");
     }
 
-    const publishFrame = toRealtimePublishPayload(
-      outgoing,
-      sourceMessage,
-      botId,
-    );
-    this.wsClient.publish(
+    const startedAt = Date.now();
+    const publishFrame = toRealtimePublishPayload(outgoing, sourceMessage, botId);
+    await mqttClient.publish(
       publishFrame.topic,
       publishFrame.payload,
-      outgoing.message_id,
+      this.bootstrap?.broker.qos ?? 1,
     );
-    this.logger.info("reply.dispatch.ws_publish", {
+    this.logger.info("reply.dispatch.mqtt_publish", {
       sourceMessageId: sourceMessage.message_id,
       dialogId: sourceMessage.dialog_id,
       replyMessageId: outgoing.message_id,
@@ -479,8 +456,8 @@ class ManagedBotRuntime {
   private async recoverPendingMessages(): Promise<void> {
     const dialogIds = new Set<string>();
 
-    for (const dialog of this.bootstrap?.dialogs ?? []) {
-      dialogIds.add(dialog.dialog_id);
+    for (const conversation of this.bootstrap?.conversations ?? []) {
+      dialogIds.add(conversation.conversation_id);
     }
     for (const checkpoint of this.checkpointStore.values()) {
       dialogIds.add(checkpoint.dialog_id);
@@ -499,34 +476,33 @@ class ManagedBotRuntime {
 
   private async recoverDialog(dialogId: string): Promise<void> {
     const checkpoint = this.checkpointStore.get(dialogId);
-
+    const limit =
+      this.bootstrap?.history?.max_catchup_batch ?? DEFAULT_HISTORY_LIMIT;
     let rawMessages: unknown[];
     try {
-      rawMessages = await this.httpClient.getDialogMessages(dialogId, {
+      rawMessages = await this.httpClient.getConversationMessages(dialogId, {
         ...(checkpoint?.last_seq !== undefined
           ? { afterSeq: checkpoint.last_seq }
           : {}),
-        limit: 200,
+        limit,
       });
     } catch (error) {
-      if (error instanceof BotChatHttpError && error.status === 404) {
-        return;
+      if (error instanceof BotChatHttpError) {
+        if (error.status === 404 || error.status === 400) {
+          this.logger.warn("recovery.dialog_skipped", {
+            dialogId,
+            status: error.status,
+          });
+          return;
+        }
       }
       throw error;
     }
 
-    const messages = rawMessages
+    let messages = rawMessages
       .map((item) => normalizeBotChatMessage(item))
       .filter((item): item is BotChatMessage => item !== null)
-      .filter((item) => {
-        if (item.dialog_id !== dialogId) {
-          return false;
-        }
-        if (checkpoint?.last_seq !== undefined && item.seq !== undefined) {
-          return item.seq > checkpoint.last_seq;
-        }
-        return !this.isMessageProcessed(item.message_id);
-      })
+      .filter((item) => item.dialog_id === dialogId)
       .sort((left, right) => {
         const leftSeq = left.seq ?? 0;
         const rightSeq = right.seq ?? 0;
@@ -535,6 +511,8 @@ class ManagedBotRuntime {
         }
         return left.timestamp - right.timestamp;
       });
+
+    messages = this.filterRecoveredMessages(messages, checkpoint);
 
     if (messages.length > 0 || isRuntimeDebugEnabled()) {
       this.logger.debug("recovery.dialog_messages", {
@@ -549,6 +527,36 @@ class ManagedBotRuntime {
     for (const message of messages) {
       await this.handleIncomingMessage(message);
     }
+  }
+
+  private filterRecoveredMessages(
+    messages: BotChatMessage[],
+    checkpoint: Checkpoint | undefined,
+  ): BotChatMessage[] {
+    if (messages.length === 0) {
+      return messages;
+    }
+
+    if (checkpoint?.last_seq !== undefined) {
+      const lastSeq = checkpoint.last_seq;
+      return messages.filter((item) => {
+        if (item.seq !== undefined) {
+          return item.seq > lastSeq;
+        }
+        return !this.isMessageProcessed(item.message_id);
+      });
+    }
+
+    if (checkpoint?.last_message_id) {
+      const lastProcessedIndex = messages.findIndex(
+        (item) => item.message_id === checkpoint.last_message_id,
+      );
+      if (lastProcessedIndex >= 0) {
+        return messages.slice(lastProcessedIndex + 1);
+      }
+    }
+
+    return messages.filter((item) => !this.isMessageProcessed(item.message_id));
   }
 
   private async saveCheckpoint(
@@ -579,64 +587,6 @@ class ManagedBotRuntime {
       channelId: channel.id,
       channelType: channel.type,
     });
-  }
-
-  private scheduleHeartbeat(): void {
-    if (!this.botId) {
-      return;
-    }
-
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = undefined;
-    }
-
-    const interval = Math.max(
-      5_000,
-      Math.floor(this.wsClient.getHeartbeatIntervalMs() * 0.8),
-    );
-
-    const runHeartbeat = async (): Promise<void> => {
-      if (!this.botId || this.stopped) {
-        return;
-      }
-
-      try {
-        await this.httpClient.sendHeartbeat({
-          session_id: this.wsClient.getSessionId(),
-          bot_id: this.botId,
-          subscriptions: this.wsClient.getSubscribedTopics(),
-          checkpoints: this.checkpointStore.values(),
-          timestamp: Date.now(),
-        });
-        // if (isRuntimeDebugEnabled()) {
-        //   this.logger.debug("heartbeat.sent", {
-        //     botId: this.botId,
-        //     sessionId: this.wsClient.getSessionId(),
-        //     subscriptions: this.wsClient.getSubscribedTopics().length,
-        //     checkpoints: this.checkpointStore.values().length,
-        //   });
-        // }
-      } catch (error) {
-        if (error instanceof BotChatHttpError && error.status === 404) {
-          return;
-        }
-        this.logger.error(
-          "heartbeat.failed",
-          {
-            botId: this.botId,
-            sessionId: this.wsClient.getSessionId(),
-          },
-          error,
-        );
-      }
-    };
-
-    this.heartbeatTimer = setInterval(() => {
-      void runHeartbeat();
-    }, interval);
-
-    void runHeartbeat();
   }
 
   private isMessageProcessed(messageId: string): boolean {
@@ -679,7 +629,14 @@ class ManagedBotRuntime {
   }
 
   private trackDialog(
-    dialog: DialogInfo,
+    dialog: {
+      dialog_id: string;
+      topic?: string;
+      title?: string;
+      last_seq?: number;
+      last_message_id?: string;
+      updated_at?: number;
+    },
     botId: string,
     channel?: ChannelContext,
   ): void {
@@ -734,7 +691,13 @@ class ManagedBotRuntime {
   }
 }
 
-function buildDialogInfo(message: BotChatMessage): DialogInfo {
+function buildDialogInfo(message: BotChatMessage): {
+  dialog_id: string;
+  topic?: string;
+  last_seq?: number;
+  last_message_id?: string;
+  updated_at?: number;
+} {
   const topic = readString(message.meta?.["topic"]);
   return {
     dialog_id: message.dialog_id,
@@ -742,6 +705,45 @@ function buildDialogInfo(message: BotChatMessage): DialogInfo {
     ...(message.seq !== undefined ? { last_seq: message.seq } : {}),
     last_message_id: message.message_id,
     updated_at: message.timestamp,
+  };
+}
+
+function toDialogInfo(conversation: ConversationInfo): {
+  dialog_id: string;
+  topic?: string;
+  title?: string;
+  last_seq?: number;
+  last_message_id?: string;
+  updated_at?: number;
+} {
+  return {
+    dialog_id: conversation.conversation_id,
+    ...(conversation.topic ? { topic: conversation.topic } : {}),
+    ...(conversation.title ? { title: conversation.title } : {}),
+    ...(conversation.last_seq !== undefined
+      ? { last_seq: conversation.last_seq }
+      : {}),
+    ...(conversation.last_message_id
+      ? { last_message_id: conversation.last_message_id }
+      : {}),
+    ...(conversation.updated_at !== undefined
+      ? { updated_at: conversation.updated_at }
+      : {}),
+  };
+}
+
+function toCheckpoint(conversation: ConversationInfo): Checkpoint {
+  return {
+    dialog_id: conversation.conversation_id,
+    ...(conversation.last_seq !== undefined
+      ? { last_seq: conversation.last_seq }
+      : {}),
+    ...(conversation.last_message_id
+      ? { last_message_id: conversation.last_message_id }
+      : {}),
+    ...(conversation.updated_at !== undefined
+      ? { updated_at: conversation.updated_at }
+      : {}),
   };
 }
 

@@ -10,6 +10,7 @@ import type {
   MessageApiResponse,
   MessageContent,
   MessageContent as ChatMessageContent,
+  RealtimeMessagePayload,
 } from './types'
 import { createClientId } from './id'
 
@@ -83,20 +84,8 @@ export function normalizeApiMessage(raw: MessageApiResponse, conversationId?: st
   }
 }
 
-export function normalizeWsMessage(
-  topic: string,
-  payload: {
-    id?: string
-    message_id?: string
-    from?: { type: string; id: string; name?: string | null; avatar?: string | null }
-    to?: { type: string; id: string; name?: string | null; avatar?: string | null }
-    content: MessageContent
-    timestamp?: number
-    created_at?: string
-    seq?: number
-  },
-  conversationId: string,
-): Message {
+export function normalizeRealtimeMessage(payload: RealtimeMessagePayload, fallbackTopic: string): Message {
+  const topic = payload.topic || fallbackTopic
   const route = parseChatTopic(topic)
   const from: ChatPeer = payload.from
     ? { ...payload.from, type: payload.from.type as ChatPeerType }
@@ -104,18 +93,17 @@ export function normalizeWsMessage(
         type: (route.kind === 'direct' ? route.leftType : 'system') as ChatPeerType,
         id: route.kind === 'direct' ? route.leftId : '',
       }
-  const to: ChatPeer = payload.to
-    ? { ...payload.to, type: payload.to.type as ChatPeerType }
-    : (
-        route.kind === 'group'
-          ? { type: 'group', id: route.groupId }
-          : route.kind === 'direct'
-            ? { type: route.rightType as ChatPeerType, id: route.rightId }
-            : { type: 'system', id: '' }
-      )
-
+  const to: ChatPeer =
+    payload.to
+      ? { ...payload.to, type: payload.to.type as ChatPeerType }
+      : route.kind === 'group'
+        ? { type: 'group', id: route.groupId }
+        : route.kind === 'direct'
+          ? { type: route.rightType as ChatPeerType, id: route.rightId }
+          : { type: 'system', id: '' }
+  const conversationId = payload.conversation_id || topic
   return {
-    id: payload.id || payload.message_id || createClientId(),
+    id: payload.id || createClientId(),
     conversation_id: conversationId,
     topic,
     sender_id: from.id,

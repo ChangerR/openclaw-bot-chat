@@ -1,4 +1,13 @@
-import type { Checkpoint, DialogInfo } from "./index";
+import type { Checkpoint } from "./index";
+
+interface DialogInfo {
+  dialog_id: string;
+  topic?: string;
+  title?: string;
+  last_seq?: number;
+  last_message_id?: string;
+  updated_at?: number;
+}
 
 export interface ChannelContext {
   id: string;

@@ -8,7 +8,6 @@ require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/golang-jwt/jwt/v5 v5.2.3
 	github.com/google/uuid v1.5.0
-	github.com/gorilla/websocket v1.5.1
 	github.com/redis/go-redis/v9 v9.3.0
 	github.com/rs/zerolog v1.31.0
 	github.com/spf13/viper v1.21.0
@@ -34,6 +33,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/google/go-querystring v1.0.0 // indirect
+	github.com/gorilla/websocket v1.5.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
 	github.com/jackc/pgx/v5 v5.4.3 // indirect

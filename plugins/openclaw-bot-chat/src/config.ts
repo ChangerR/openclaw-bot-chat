@@ -22,11 +22,11 @@ export interface BotConfig {
 
 export interface PluginConfig {
   botChatBaseUrl: string;
+  mqttTcpUrl?: string;
   botId?: string;
   accessKey?: string;
   configPath: string;
   stateDir: string;
-  heartbeatIntervalMs: number;
   httpTimeoutMs: number;
   reconnectBaseDelayMs: number;
   reconnectMaxDelayMs: number;
@@ -56,22 +56,26 @@ export async function loadConfig(cwd = process.cwd()): Promise<PluginConfig> {
   const fileConfig = await readConfigFile(configPath);
 
   const botChatBaseUrl = readString(
-    process.env.BOT_CHAT_BASE_URL,
+    process.env.BOT_CHAT_BACKEND_URL,
     readString(
-      fileConfig["BOT_CHAT_BASE_URL"],
+      fileConfig["BOT_CHAT_BACKEND_URL"],
       readString(fileConfig["botChatBaseUrl"], readString(fileConfig["baseUrl"])),
     ),
   );
+  const mqttTcpUrl = readString(
+    process.env.BOT_CHAT_MQTT_TCP_URL,
+    readString(fileConfig["BOT_CHAT_MQTT_TCP_URL"], readString(fileConfig["mqttTcpUrl"])),
+  );
   const accessKey = readString(
-    process.env.ACCESS_KEY,
+    process.env.BOT_CHAT_BOT_KEY,
     readString(
-      fileConfig["ACCESS_KEY"],
+      fileConfig["BOT_CHAT_BOT_KEY"],
       readString(fileConfig["accessKey"]),
     ),
   );
   const botId = readString(
-    process.env.BOT_ID,
-    readString(fileConfig["BOT_ID"], readString(fileConfig["botId"])),
+    process.env.BOT_CHAT_BOT_ID,
+    readString(fileConfig["BOT_CHAT_BOT_ID"], readString(fileConfig["botId"])),
   );
   const defaultChannelPolicy = readChannelPolicy(
     process.env.BOT_CHAT_DEFAULT_CHANNEL_POLICY,
@@ -87,7 +91,7 @@ export async function loadConfig(cwd = process.cwd()): Promise<PluginConfig> {
   );
 
   if (!botChatBaseUrl) {
-    throw new Error("BOT_CHAT_BASE_URL is required");
+    throw new Error("BOT_CHAT_BACKEND_URL is required");
   }
 
   const fileBots = readBots(fileConfig["bots"], defaultChannelPolicy);
@@ -113,12 +117,9 @@ export async function loadConfig(cwd = process.cwd()): Promise<PluginConfig> {
 
   const config: PluginConfig = {
     botChatBaseUrl: normalizeBaseUrl(botChatBaseUrl),
+    ...(mqttTcpUrl ? { mqttTcpUrl } : {}),
     configPath,
     stateDir,
-    heartbeatIntervalMs: readInteger(
-      process.env.BOT_CHAT_HEARTBEAT_INTERVAL_MS,
-      readInteger(fileConfig["heartbeatIntervalMs"], 15_000),
-    ),
     httpTimeoutMs: readInteger(
       process.env.BOT_CHAT_HTTP_TIMEOUT_MS,
       readInteger(fileConfig["httpTimeoutMs"], 15_000),
@@ -219,7 +220,7 @@ function readBotConfig(
     return undefined;
   }
 
-  const accessKey = readString(value["accessKey"], value["ACCESS_KEY"]);
+  const accessKey = readString(value["accessKey"], value["BOT_CHAT_BOT_KEY"]);
   if (!accessKey) {
     throw new Error(`${configPath}.accessKey is required`);
   }
@@ -231,7 +232,7 @@ function readBotConfig(
     actions: resolveActionPermissions(readActions(value["actions"])),
   };
 
-  const id = readString(value["id"], value["BOT_ID"], value["botId"]);
+  const id = readString(value["id"], value["BOT_CHAT_BOT_ID"], value["botId"]);
   if (id) {
     botConfig.id = id;
   }
@@ -257,7 +258,7 @@ function buildLegacyBots(
   defaultBot: string | undefined,
 ): Record<string, BotConfig> {
   if (!accessKey) {
-    throw new Error("ACCESS_KEY is required");
+    throw new Error("BOT_CHAT_BOT_KEY is required");
   }
 
   const key = defaultBot ?? DEFAULT_BOT_KEY;

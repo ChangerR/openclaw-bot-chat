@@ -1,196 +1,72 @@
 # OpenClaw Bot Chat Backend
 
-A Go backend service for multi-robot chat, supporting MQTT messaging, WebSocket real-time communication, and JWT authentication.
+Go backend，职责收敛为：
 
-## Tech Stack
+- 用户与 bot 鉴权
+- bots/groups/assets/messages/conversations 业务数据管理
+- realtime bootstrap 元数据下发
+- MQTT consumer 消费业务 topic 并持久化
+- 历史消息查询与断线补偿查询
 
-- **Go 1.21+**, Gin, GORM, PostgreSQL 15, Redis
-- **MQTT**: `github.com/eclipse/paho.mqtt.golang`
-- **WebSocket**: `github.com/gorilla/websocket`
-- **Auth**: JWT (golang-jwt/jwt/v5)
-- **Config**: Viper (YAML)
-- **Logging**: zerolog
+不再提供自定义 WebSocket realtime 协议，不再充当消息转发层。
 
-## Quick Start
+## Runtime 依赖
 
-### 1. Clone & Install Dependencies
+- Go 1.26+
+- PostgreSQL
+- Redis
+- 任意支持认证+ACL 的 MQTT broker（compose 默认 EMQX）
+
+## 配置
+
+主要配置在 `config.yaml`，也支持环境变量覆盖。
+
+`mqtt` 关键字段：
+
+```yaml
+mqtt:
+  broker: "tcp://127.0.0.1:1883"
+  client_id: "openclaw-backend"
+  username: "openclaw_backend"
+  password: "change-me-in-production"
+  topic_prefix: "chat"
+  qos: 1
+  tcp_public_url: "mqtt://127.0.0.1:1883"
+  ws_public_url: "ws://127.0.0.1:8083/mqtt"
+```
+
+- `broker`：backend 自己连接 broker 的地址
+- `tcp_public_url`：下发给 plugin/testagent
+- `ws_public_url`：下发给 frontend
+
+## 启动
 
 ```bash
 cd backend
 go mod tidy
-```
-
-### 2. Configure
-
-Edit `config.yaml` with your PostgreSQL, Redis, and MQTT settings:
-
-```yaml
-database:
-  host: "localhost"
-  port: 5432
-  user: "postgres"
-  password: "your-password"
-  dbname: "openclaw_bot_chat"
-
-redis:
-  host: "localhost"
-  port: 6379
-
-mqtt:
-  broker: "tcp://localhost:1883"
-
-jwt:
-  secret: "change-me-in-production"
-```
-
-### 3. Run Database Migration
-
-```bash
-psql -U postgres -c "CREATE DATABASE openclaw_bot_chat;"
-psql -U postgres -d openclaw_bot_chat -f migrations/init.sql
-```
-
-### 4. Run the Server
-
-```bash
 go run ./cmd/server
-# Server starts on http://0.0.0.0:8080
 ```
 
-## API Routes
+## 核心接口（摘要）
 
-详细接口文档见仓库根目录：
+- `GET /health`
+- `GET /api/v1/realtime/bootstrap`（用户 JWT）
+- `GET /api/v1/bot-runtime/bootstrap`（`X-Bot-Key`）
+- `GET /api/v1/conversations`
+- `GET /api/v1/messages`
+- `GET /api/v1/messages/*conversation_id`
+- `GET /api/v1/bot-runtime/messages/*conversation_id`
+- 其余 auth/bot/group/asset 管理接口
 
-- `docs/API.md`
+完整字段见仓库根目录 `docs/API.md`。
 
-这里保留路由总览。
+## MQTT 持久化职责
 
-### Auth
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | /api/v1/auth/register | Register new user |
-| POST | /api/v1/auth/login | Login, returns JWT |
-| POST | /api/v1/auth/refresh | Refresh tokens |
-| POST | /api/v1/auth/logout | Logout |
-| GET | /api/v1/auth/me | Current user info |
-| PUT | /api/v1/auth/me | Update current user profile |
-| POST | /api/v1/auth/change-password | Change current user password |
+- backend 仅订阅业务 topic 并入库
+- seq 在 backend 落库时分配
+- 历史恢复通过 REST 查询，不通过 backend websocket replay
 
-### Bots
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | /api/v1/bots | List user's bots |
-| POST | /api/v1/bots | Create bot |
-| GET | /api/v1/bots/:id | Get bot details |
-| PUT | /api/v1/bots/:id | Update bot |
-| DELETE | /api/v1/bots/:id | Delete bot |
-| GET | /api/v1/bots/:id/keys | List bot keys |
-| POST | /api/v1/bots/:id/keys | Create new key |
-| DELETE | /api/v1/bots/:id/keys/:key_id | Revoke key |
+## Broker ACL TODO
 
-### Messages
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | /api/v1/messages?conversation_id=xxx&limit=50 | Get messages |
-| GET | /api/v1/messages/:conversation_id | Get messages via REST-style path |
-| POST | /api/v1/messages | Send message via HTTP fallback |
-| GET | /api/v1/conversations | List conversations |
-
-### Groups
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | /api/v1/groups | List groups |
-| POST | /api/v1/groups | Create group |
-| GET | /api/v1/groups/:id | Get group |
-| PUT | /api/v1/groups/:id | Update group |
-| DELETE | /api/v1/groups/:id | Delete group |
-| POST | /api/v1/groups/:id/members | Add member |
-| DELETE | /api/v1/groups/:id/members/:uid | Remove member |
-| GET | /api/v1/groups/:id/members | List members |
-
-### Realtime
-| Endpoint | Description |
-|----------|-------------|
-| GET /api/v1/ws?token=<jwt> | User WebSocket session (JWT) |
-| GET /api/v1/ws + `X-Bot-Key` | Bot WebSocket session (validated bot key) |
-
-### Bot Runtime
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | /api/v1/bot-runtime/bootstrap | Return bot bootstrap info for plugin runtime |
-| POST | /api/v1/bot-runtime/messages | Send bot reply through HTTP with `X-Bot-Key` |
-| POST | /api/v1/bot-runtime/heartbeat | Optional runtime heartbeat |
-| GET | /api/v1/bot-runtime/dialogs/:dialog_id/messages | Fetch dialog messages for replay / recovery |
-
-## MQTT Topics
-
-MQTT routing only trusts the topic path itself. `bots.mqtt_topic` and `groups.mqtt_topic` are legacy fields and are not the route source.
-
-| Topic | Description |
-|-------|-------------|
-| `chat/dm/{leftType}/{leftId}/{rightType}/{rightId}` | Canonical direct route for `user` / `bot` peers |
-| `chat/group/{groupId}` | Group route |
-
-## WebSocket Protocol
-
-Connect as user: `GET /api/v1/ws?token=<jwt>`
-
-Connect as bot: `GET /api/v1/ws` with header `X-Bot-Key: <bot-key>`
-
-**Subscribe:**
-```json
-{"type": "subscribe", "topic": "chat/dm/bot/xxx/bot/yyy"}
-```
-
-**Publish:**
-```json
-{"type": "publish", "topic": "chat/dm/bot/xxx/bot/yyy", "payload": {"from": {"type": "bot", "id": "xxx"}, "to": {"type": "bot", "id": "yyy"}, "content": {"type": "text", "body": "hello"}}}
-```
-
-**Incoming Message:**
-```json
-{"type": "message", "topic": "chat/dm/bot/xxx/bot/yyy", "payload": {...}}
-```
-
-## Bot Key Format
-
-- Format: `ocbk_{32-char-base64-safe}_{8-char-uuid}`
-- Example: `ocbk_Abc123XYZPQR_defghijk_lmnopqrs`
-- Stored as bcrypt hash
-- Shown only once at creation time
-
-## Project Structure
-
-```
-backend/
-├── cmd/server/main.go
-├── internal/
-│   ├── config/
-│   ├── model/
-│   ├── repository/
-│   ├── service/
-│   ├── handler/
-│   ├── mqtt/
-│   ├── middleware/
-│   └── websocket/
-├── pkg/
-│   ├── jwt/
-│   ├── password/
-│   └── response/
-├── migrations/
-├── scripts/
-├── config.yaml
-├── go.mod
-└── go.sum
-```
-
-## Docker
-
-```bash
-# With Docker Compose v2
-docker compose up -d
-
-# Manual
-docker build -t openclaw-backend .
-docker run -p 8080:8080 -v $(pwd)/config.yaml:/app/config.yaml openclaw-backend
-```
+- compose 默认 EMQX 示例已开启用户名密码认证。
+- `TODO(broker-acl)`: 后续接入自有 broker 时，需要把用户/bot 的 publish/subscribe ACL 做成动态下发。

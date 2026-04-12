@@ -2,8 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { authApi } from '@/lib/api'
-import type { User, AuthTokens } from '@/lib/types'
-import { getWebSocketClient } from '@/lib/websocket'
+import type { User } from '@/lib/types'
 
 interface AuthContextType {
   user: User | null
@@ -32,11 +31,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const userData = await authApi.getMe()
       setUser(userData)
-      await getWebSocketClient().connect(token)
     } catch (error) {
       localStorage.removeItem('access_token')
       localStorage.removeItem('refresh_token')
-      getWebSocketClient().disconnect()
     } finally {
       setIsLoading(false)
     }
@@ -51,8 +48,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('access_token', tokens.access_token)
     localStorage.setItem('refresh_token', tokens.refresh_token)
     await loadUser()
-    // Connect WebSocket after login
-    getWebSocketClient().connect(tokens.access_token)
   }
 
   const register = async (username: string, email: string, password: string) => {
@@ -60,7 +55,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('access_token', tokens.access_token)
     localStorage.setItem('refresh_token', tokens.refresh_token)
     await loadUser()
-    getWebSocketClient().connect(tokens.access_token)
   }
 
   const logout = async () => {
@@ -72,7 +66,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       localStorage.removeItem('access_token')
       localStorage.removeItem('refresh_token')
       setUser(null)
-      getWebSocketClient().disconnect()
     }
   }
 
@@ -95,7 +88,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const tokens = await authApi.refresh({ refresh_token: storedRefreshToken })
       localStorage.setItem('access_token', tokens.access_token)
       localStorage.setItem('refresh_token', tokens.refresh_token)
-      await getWebSocketClient().connect(tokens.access_token)
     } catch (error) {
       await logout()
     }

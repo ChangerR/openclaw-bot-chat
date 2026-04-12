@@ -1,10 +1,14 @@
 'use client'
 
 import React, { useState, useRef, useEffect } from 'react'
+import dynamic from 'next/dynamic'
 import { Avatar } from '@/components/Avatar'
 import { useChat } from '@/contexts/ChatContext'
 import { assetsApi, groupsApi } from '@/lib/api'
 import { Bot, ComposerMessageInput, GroupMember } from '@/lib/types'
+import { STICKERS, Sticker } from '@/lib/stickers'
+
+const EmojiPicker = dynamic(() => import('emoji-picker-react'), { ssr: false })
 
 interface ChatInputProps {
   onSendMessage: (input: ComposerMessageInput) => Promise<void>
@@ -16,14 +20,24 @@ interface MentionBot {
   id: string
   name: string
   avatar?: string | null
+  aliases: string[]
+}
+
+type MentionCandidate = {
+  id: string
+  name: string
+  aliases?: string[]
 }
 
 export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a message...' }: ChatInputProps) {
   const [content, setContent] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [showStickerPicker, setShowStickerPicker] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const pickerRef = useRef<HTMLDivElement>(null)
 
   const { bots, currentConversation } = useChat()
   const [mentionActive, setMentionActive] = useState(false)
@@ -31,6 +45,59 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   const [mentionStartIndex, setMentionStartIndex] = useState(-1)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [groupBots, setGroupBots] = useState<MentionBot[]>([])
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
+        setShowEmojiPicker(false)
+        setShowStickerPicker(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const handleEmojiClick = (emojiData: any) => {
+    const emoji = emojiData.emoji
+    const cursorPosition = textareaRef.current?.selectionStart || content.length
+    const newContent = content.slice(0, cursorPosition) + emoji + content.slice(cursorPosition)
+    setContent(newContent)
+
+    // Set focus back to textarea and move cursor
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus()
+        const newPos = cursorPosition + emoji.length
+        textareaRef.current.setSelectionRange(newPos, newPos)
+      }
+    }, 0)
+  }
+
+  const handleStickerClick = async (sticker: Sticker) => {
+    if (disabled || isSending || isUploading || !currentConversation) return
+
+    setIsSending(true)
+    try {
+      await onSendMessage({
+        type: 'image',
+        body: sticker.name,
+        asset: {
+          external_url: sticker.url,
+          file_name: sticker.name,
+          kind: 'image',
+        },
+        meta: {
+          is_sticker: true,
+          sticker_id: sticker.id,
+        },
+      })
+      setShowStickerPicker(false)
+    } catch (error) {
+      console.error('Failed to send sticker:', error)
+    } finally {
+      setIsSending(false)
+    }
+  }
 
   const mentionBots = currentConversation?.target.type === 'group' ? groupBots : bots
 
@@ -93,7 +160,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
 
   const handleSend = async () => {
     if (!content.trim() || isSending || isUploading || disabled) return
-    
+
     setIsSending(true)
     try {
       await onSendMessage({
@@ -162,12 +229,12 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
     const mentionText = `@${bot.name} `
     const cursorPosition = textareaRef.current?.selectionStart || content.length
     const afterMention = content.slice(cursorPosition)
-    
+
     const newContent = beforeMention + mentionText + afterMention
     setContent(newContent)
     setMentionActive(false)
     setMentionQuery('')
-    
+
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.focus()
@@ -179,15 +246,18 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
 
   const checkMentionState = (target: HTMLTextAreaElement) => {
     const value = target.value
-    const cursorPosition = target.selectionStart
+    const cursorPosition = target.selectionStart || 0
     const textBeforeCursor = value.slice(0, cursorPosition)
-    const wordsBeforeCursor = textBeforeCursor.split(/[\s\n]+/)
-    const currentWord = wordsBeforeCursor[wordsBeforeCursor.length - 1]
     
-    if (currentWord.startsWith('@')) {
+    // Match @name or ＠name at the end of textBeforeCursor
+    // We allow mentions to start after: start of line, space, newline, punctuation, or Chinese characters (anything not a word char)
+    const mentionMatch = textBeforeCursor.match(/(?:^|[^a-zA-Z0-9_])([@＠][^\s\n]*)$/)
+    
+    if (mentionMatch) {
+      const fullMatch = mentionMatch[1]
       setMentionActive(true)
-      setMentionQuery(currentWord.slice(1))
-      const wordStartIndex = textBeforeCursor.length - currentWord.length
+      setMentionQuery(fullMatch.slice(1))
+      const wordStartIndex = cursorPosition - fullMatch.length
       setMentionStartIndex(wordStartIndex)
     } else {
       setMentionActive(false)
@@ -200,7 +270,6 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   }
 
   const handleSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
-    // Also check mention state when cursor moves via click or arrow keys
     checkMentionState(e.target as HTMLTextAreaElement)
   }
 
@@ -245,15 +314,15 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
       .join('|');
       
     // Basic match for mentioning known bots
-    const regex = escapedMentions ? new RegExp(`(@(?:${escapedMentions}))`, 'g') : /(@[a-zA-Z0-9_\-\u4e00-\u9fa5]+)/g;
+    const regex = escapedMentions ? new RegExp(`([@＠](?:${escapedMentions}))`, 'g') : /([@＠][a-zA-Z0-9_\-\u4e00-\u9fa5]+)/g;
     
     const parts = text.split(regex);
     return parts.map((part, i) => {
       // Re-evaluate regex on the part to check if it's a match
-      const isMatch = escapedMentions ? new RegExp(`^(@(?:${escapedMentions}))$`).test(part) : /^(@[a-zA-Z0-9_\-\u4e00-\u9fa5]+)$/.test(part);
+      const isMatch = escapedMentions ? new RegExp(`^([@＠](?:${escapedMentions}))$`).test(part) : /^([@＠][a-zA-Z0-9_\-\u4e00-\u9fa5]+)$/.test(part);
       if (isMatch) {
         return (
-          <span key={i} className="bg-indigo-100 text-indigo-700 rounded px-0.5 font-bold">
+          <span key={i} className="bg-indigo-100 text-indigo-700 rounded">
             {part}
           </span>
         );
@@ -263,39 +332,88 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
   }
 
   return (
-    <div className="px-6 py-4 bg-white/50 border-t border-slate-200/50 backdrop-blur-sm relative">
+    <div className="px-3 md:px-6 py-3 md:py-4 bg-white/50 border-t border-slate-200/50 backdrop-blur-sm relative" ref={pickerRef}>
+      {/* Pickers */}
+      {(showEmojiPicker || showStickerPicker) && (
+        <div className="absolute bottom-full left-3 md:left-6 mb-2 z-50 animate-in slide-in-from-bottom-2">
+          {showEmojiPicker && (
+            <div className="shadow-2xl rounded-2xl overflow-hidden border border-slate-100">
+              <EmojiPicker
+                onEmojiClick={handleEmojiClick}
+                autoFocusSearch={false}
+                theme="light"
+                width={320}
+                height={400}
+                searchPlaceHolder="Search emoji..."
+              />
+            </div>
+          )}
+          {showStickerPicker && (
+            <div className="bg-white shadow-2xl rounded-2xl border border-slate-100 p-3 w-72 md:w-80 overflow-hidden">
+              <div className="px-1 py-2 mb-2 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-50">
+                Stickers
+              </div>
+              <div className="grid grid-cols-4 gap-2 max-h-64 overflow-y-auto scrollbar-thin p-1">
+                {STICKERS.map((sticker) => (
+                  <button
+                    key={sticker.id}
+                    onClick={() => void handleStickerClick(sticker)}
+                    className="aspect-square p-2 rounded-xl hover:bg-slate-50 transition-all group"
+                  >
+                    <img
+                      src={sticker.url}
+                      alt={sticker.name}
+                      className="w-full h-full object-contain group-hover:scale-110 transition-transform"
+                    />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Auto-complete Popup */}
-      {mentionActive && filteredBots.length > 0 && (
-        <div className="absolute bottom-full left-6 mb-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden z-50 animate-in slide-in-from-bottom-2">
+      {mentionActive && (
+        <div
+          className="absolute bottom-full left-3 md:left-6 mb-2 w-[calc(100%-24px)] md:w-64 bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden z-50 animate-in slide-in-from-bottom-2"
+          onPointerDown={(e) => e.preventDefault()} // Prevent blur when clicking container or scrollbar
+        >
           <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-widest">
             Mention Bot
           </div>
           <div className="max-h-48 overflow-y-auto scrollbar-thin">
-            {filteredBots.map((bot, index) => (
-              <button
-                key={bot.id}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  insertMention(bot);
-                }}
-                onMouseEnter={() => setSelectedIndex(index)}
-                className={`w-full flex items-center gap-3 px-3 py-2 text-left transition-colors ${
-                  index === selectedIndex ? 'bg-sky-50' : 'hover:bg-slate-50'
-                }`}
-              >
-                <Avatar name={bot.name} src={bot.avatar || undefined} size="sm" />
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-bold truncate ${index === selectedIndex ? 'text-sky-600' : 'text-slate-700'}`}>
-                    {bot.name}
-                  </p>
-                </div>
-              </button>
-            ))}
+            {filteredBots.length > 0 ? (
+              filteredBots.map((bot, index) => (
+                <button
+                  key={bot.id}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    insertMention(bot as Bot);
+                  }}
+                  onMouseEnter={() => setSelectedIndex(index)}
+                  className={`w-full flex items-center gap-3 px-3 py-2 text-left transition-colors ${
+                    index === selectedIndex ? 'bg-sky-50' : 'hover:bg-slate-50'
+                  }`}
+                >
+                  <Avatar name={bot.name} src={bot.avatar || undefined} size="sm" />
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm font-bold truncate ${index === selectedIndex ? 'text-sky-600' : 'text-slate-700'}`}>
+                      {bot.name}
+                    </p>
+                  </div>
+                </button>
+              ))
+            ) : (
+              <div className="px-3 py-4 text-center text-sm text-slate-400 font-medium italic">
+                No bots found
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      <div className="flex items-end gap-3 bg-white p-2 pr-2.5 rounded-2xl shadow-sm border border-slate-200/50 focus-within:ring-2 focus-within:ring-[#0EA5E9]/20 transition-all">
+      <div className="flex items-end gap-2 md:gap-3 bg-white p-2 pr-2.5 rounded-2xl shadow-sm border border-slate-200/50 focus-within:ring-2 focus-within:ring-[#0EA5E9]/20 transition-all">
         <input
           ref={fileInputRef}
           type="file"
@@ -305,25 +423,63 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
             void handleImageSelect(e)
           }}
         />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled || isSending || isUploading || !currentConversation}
-          className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all flex-shrink-0 ${
-            !disabled && !isSending && !isUploading && currentConversation
-              ? 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-              : 'bg-slate-100 text-slate-300'
-          }`}
-          title="Upload image"
-        >
-          {isUploading ? (
-            <div className="w-5 h-5 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin" />
-          ) : (
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              setShowEmojiPicker(!showEmojiPicker)
+              setShowStickerPicker(false)
+            }}
+            disabled={disabled || isSending || isUploading || !currentConversation}
+            className={`w-9 h-9 flex items-center justify-center rounded-lg transition-all flex-shrink-0 ${
+              showEmojiPicker
+                ? 'bg-sky-100 text-sky-600'
+                : 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'
+            }`}
+            title="Emoji"
+          >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2 1.586-1.586a2 2 0 012.828 0L20 14m-6-10h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-          )}
-        </button>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setShowStickerPicker(!showStickerPicker)
+              setShowEmojiPicker(false)
+            }}
+            disabled={disabled || isSending || isUploading || !currentConversation}
+            className={`w-9 h-9 flex items-center justify-center rounded-lg transition-all flex-shrink-0 ${
+              showStickerPicker
+                ? 'bg-sky-100 text-sky-600'
+                : 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'
+            }`}
+            title="Stickers"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled || isSending || isUploading || !currentConversation}
+            className={`w-9 h-9 flex items-center justify-center rounded-lg transition-all flex-shrink-0 ${
+              !disabled && !isSending && !isUploading && currentConversation
+                ? 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'
+                : 'text-slate-300'
+            }`}
+            title="Upload image"
+          >
+            {isUploading ? (
+              <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-500 rounded-full animate-spin" />
+            ) : (
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2 1.586-1.586a2 2 0 012.828 0L20 14m-6-10h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            )}
+          </button>
+        </div>
         <div className="relative flex-1">
           {/* Highlights Overlay */}
           <div 
@@ -379,40 +535,54 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
 
 function toMentionBot(member: GroupMember): MentionBot | null {
   const id = member.bot_id || member.bot?.id
-  const name = member.bot?.name
+  const name = member.nickname?.trim() || member.bot?.name
   if (!id || !name) {
     return null
   }
+
+  const aliases = [...new Set([member.nickname, member.bot?.name].map((item) => item?.trim()).filter(Boolean) as string[])]
   return {
     id,
     name,
     avatar: member.bot?.avatar || member.bot?.avatar_url || null,
+    aliases,
   }
 }
 
 function buildMentionMeta(
   body: string,
-  bots: Array<Pick<MentionBot, 'id' | 'name'>>,
+  bots: MentionCandidate[],
 ): Record<string, unknown> {
-  const mentionedBotIds = extractMentionedBotIds(body, bots)
-  return mentionedBotIds.length > 0 ? { mentioned_bot_ids: mentionedBotIds } : {}
+  const encoded = encodeMentionedBots(body, bots)
+  if (encoded.mentionedBotIds.length === 0) {
+    return {}
+  }
+
+  return {
+    mentioned_bot_ids: encoded.mentionedBotIds,
+    ...(encoded.normalizedBody ? { normalized_body: encoded.normalizedBody } : {}),
+  }
 }
 
-function extractMentionedBotIds(
+function encodeMentionedBots(
   body: string,
-  bots: Array<Pick<MentionBot, 'id' | 'name'>>,
-): string[] {
+  bots: MentionCandidate[],
+): { mentionedBotIds: string[]; normalizedBody?: string } {
   const text = body.trim()
   if (!text || bots.length === 0) {
-    return []
+    return { mentionedBotIds: [] }
   }
 
   const candidates = bots
-    .map((bot) => ({ id: bot.id, name: bot.name.trim() }))
-    .filter((bot) => bot.name.length > 0)
-    .sort((left, right) => right.name.length - left.name.length)
+    .flatMap((bot) => {
+      const aliases = [...new Set([bot.name, ...(bot.aliases || [])].map((item) => item.trim()).filter(Boolean))]
+      return aliases.map((alias) => ({ id: bot.id, alias }))
+    })
+    .sort((left, right) => right.alias.length - left.alias.length)
 
   const mentioned = new Set<string>()
+  const normalizedParts: string[] = []
+  let lastIndex = 0
 
   for (let index = 0; index < text.length; ) {
     const char = text[index]
@@ -425,14 +595,18 @@ function extractMentionedBotIds(
     let matched = false
 
     for (const bot of candidates) {
-      if (!remaining.startsWith(bot.name)) {
+      if (!remaining.startsWith(bot.alias)) {
         continue
       }
-      if (!hasMentionBoundary(remaining.slice(bot.name.length))) {
+      if (!hasMentionBoundary(remaining.slice(bot.alias.length))) {
         continue
       }
+
       mentioned.add(bot.id)
-      index += 1 + bot.name.length
+      normalizedParts.push(text.slice(lastIndex, index))
+      normalizedParts.push(`<@bot:${bot.id}>`)
+      index += 1 + bot.alias.length
+      lastIndex = index
       matched = true
       break
     }
@@ -442,7 +616,13 @@ function extractMentionedBotIds(
     }
   }
 
-  return [...mentioned]
+  normalizedParts.push(text.slice(lastIndex))
+
+  const normalizedBody = normalizedParts.join('')
+  return {
+    mentionedBotIds: [...mentioned],
+    ...(normalizedBody !== text ? { normalizedBody } : {}),
+  }
 }
 
 function hasMentionBoundary(remaining: string): boolean {

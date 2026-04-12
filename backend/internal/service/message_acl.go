@@ -2,17 +2,15 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 
 	"github.com/google/uuid"
 )
 
 var (
 	ErrConversationAccessDenied = errors.New("you do not have access to this conversation")
-	ErrMessageSenderForbidden   = errors.New("you do not control the requested sender")
-	ErrMessageTargetForbidden   = errors.New("message target is outside allowed scope")
-	ErrTopicAccessDenied        = errors.New("you do not have access to this topic")
 	ErrInvalidMessageRoute      = errors.New("invalid message route")
 	ErrGroupAdminRequired       = errors.New("only group owner or admin can add members")
 )
@@ -74,209 +72,56 @@ func (s *MessageService) CanBotAccessConversation(ctx context.Context, botID uui
 	}
 }
 
-func (s *MessageService) CanUserSubscribeTopic(ctx context.Context, userID uuid.UUID, topic string) error {
-	if err := s.CanUserAccessConversation(ctx, userID, topic); err != nil {
-		if errors.Is(err, ErrConversationAccessDenied) {
-			return ErrTopicAccessDenied
-		}
-		return err
-	}
-	return nil
-}
+func (s *MessageService) ListUserRealtimeTopics(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	topics := make([]string, 0, 32)
 
-func (s *MessageService) CanUserPublishTopic(ctx context.Context, userID uuid.UUID, topic string, payload json.RawMessage) error {
-	normalized, err := decodePublishMessage(topic, payload)
+	conversations, err := s.GetConversations(ctx, userID, 200)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := s.authorizeUserSendNormalized(ctx, userID, normalized); err != nil {
-		return err
-	}
-	return s.prepareNormalizedMessage(ctx, &normalized)
-}
+	topics = append(topics, conversations...)
 
-func (s *MessageService) CanBotSubscribeTopic(ctx context.Context, botID uuid.UUID, topic string) error {
-	if isBotWildcardSubscriptionTopic(botID, topic) {
-		return nil
-	}
-
-	route := parseMessageRoute(topic)
-
-	switch {
-	case route.groupID != "":
-		groupID, ok := parseUUIDValue(route.groupID)
-		if !ok {
-			return ErrInvalidMessageRoute
-		}
-		allowed, err := s.isBotGroupMember(ctx, groupID, botID)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return ErrTopicAccessDenied
-		}
-		return nil
-	case !route.isDirect():
-		return ErrInvalidMessageRoute
-	case route.hasParticipant("bot", botID.String()):
-		return nil
-	default:
-		return ErrTopicAccessDenied
-	}
-}
-
-func isBotWildcardSubscriptionTopic(botID uuid.UUID, topic string) bool {
-	parts := splitMessageTopic(NormalizeConversationReference(topic))
-	if len(parts) != 6 || parts[0] != "chat" || parts[1] != "dm" {
-		return false
-	}
-
-	bot := botID.String()
-	switch {
-	case parts[2] == "user" && parts[3] == "+" && parts[4] == "bot" && parts[5] == bot:
-		return true
-	case parts[2] == "bot" && parts[3] == bot && parts[4] == "bot" && parts[5] == "+":
-		return true
-	case parts[2] == "bot" && parts[3] == "+" && parts[4] == "bot" && parts[5] == bot:
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *MessageService) CanBotPublishTopic(ctx context.Context, botID uuid.UUID, topic string, payload json.RawMessage) error {
-	normalized, err := decodePublishMessage(topic, payload)
+	groups, _, err := s.groupRepo.ListByUser(ctx, userID, 1, 500)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := s.authorizeBotSendNormalized(ctx, botID, normalized); err != nil {
-		return err
+	for _, group := range groups {
+		if !group.IsActive {
+			continue
+		}
+		topics = append(topics, fmt.Sprintf("%s/group/%s", messageTopicPrefix, group.ID.String()))
 	}
-	return s.prepareNormalizedMessage(ctx, &normalized)
+
+	return uniqueSortedTopics(topics), nil
 }
 
-func (s *MessageService) authorizeUserSendNormalized(ctx context.Context, userID uuid.UUID, normalized normalizedMessage) error {
-	if err := validateNormalizedMessage(normalized); err != nil {
-		return err
-	}
+func (s *MessageService) ListBotRealtimeTopics(ctx context.Context, botID uuid.UUID) ([]string, error) {
+	topics := make([]string, 0, 32)
+	botIDString := botID.String()
+	topics = append(topics,
+		fmt.Sprintf("%s/dm/user/+/bot/%s", messageTopicPrefix, botIDString),
+		fmt.Sprintf("%s/dm/bot/%s/bot/+", messageTopicPrefix, botIDString),
+		fmt.Sprintf("%s/dm/bot/+/bot/%s", messageTopicPrefix, botIDString),
+	)
 
-	switch normalized.senderType {
-	case "user":
-		if normalized.senderID != userID.String() {
-			return ErrMessageSenderForbidden
-		}
-	case "bot":
-		senderBotID, ok := parseUUIDValue(normalized.senderID)
-		if !ok {
-			return ErrInvalidMessageRoute
-		}
-		ownsBot, err := s.userOwnsBot(ctx, userID, senderBotID)
-		if err != nil {
-			return err
-		}
-		if !ownsBot {
-			return ErrMessageSenderForbidden
-		}
-	default:
-		return ErrInvalidMessageRoute
-	}
-
-	switch normalized.receiverType {
-	case "bot":
-		receiverBotID, ok := parseUUIDValue(normalized.receiverID)
-		if !ok {
-			return ErrInvalidMessageRoute
-		}
-		allowed, err := s.canUserTargetBot(ctx, userID, receiverBotID)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return ErrMessageTargetForbidden
-		}
-	case "group":
-		groupID, ok := parseUUIDValue(normalized.receiverID)
-		if !ok {
-			return ErrInvalidMessageRoute
-		}
-		allowed, err := s.isUserGroupMember(ctx, userID, groupID)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return ErrMessageTargetForbidden
-		}
-		if normalized.senderType == "bot" {
-			senderBotID, ok := parseUUIDValue(normalized.senderID)
-			if !ok {
-				return ErrInvalidMessageRoute
-			}
-			botAllowed, err := s.isBotGroupMember(ctx, groupID, senderBotID)
-			if err != nil {
-				return err
-			}
-			if !botAllowed {
-				return ErrMessageTargetForbidden
-			}
-		}
-	case "user":
-		if normalized.receiverID != userID.String() {
-			return ErrMessageTargetForbidden
-		}
-	default:
-		return ErrInvalidMessageRoute
-	}
-
-	return nil
-}
-
-func (s *MessageService) authorizeBotSendNormalized(ctx context.Context, botID uuid.UUID, normalized normalizedMessage) error {
-	if err := validateNormalizedMessage(normalized); err != nil {
-		return err
-	}
-	if normalized.senderType != "bot" || normalized.senderID != botID.String() {
-		return ErrMessageSenderForbidden
-	}
-
-	senderBot, err := s.botRepo.GetByID(ctx, botID)
+	conversations, err := s.GetConversationsForBot(ctx, botID, 200)
 	if err != nil {
-		return ErrMessageSenderForbidden
+		return nil, err
+	}
+	topics = append(topics, conversations...)
+
+	groups, err := s.ListGroupsForBot(ctx, botID)
+	if err != nil {
+		return nil, err
+	}
+	for _, group := range groups {
+		if !group.IsActive {
+			continue
+		}
+		topics = append(topics, fmt.Sprintf("%s/group/%s", messageTopicPrefix, group.ID.String()))
 	}
 
-	switch normalized.receiverType {
-	case "bot":
-		receiverBotID, ok := parseUUIDValue(normalized.receiverID)
-		if !ok {
-			return ErrInvalidMessageRoute
-		}
-		allowed, err := s.canBotTargetBot(ctx, senderBot.OwnerID, receiverBotID)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return ErrMessageTargetForbidden
-		}
-	case "group":
-		groupID, ok := parseUUIDValue(normalized.receiverID)
-		if !ok {
-			return ErrInvalidMessageRoute
-		}
-		allowed, err := s.isBotGroupMember(ctx, groupID, botID)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return ErrMessageTargetForbidden
-		}
-	case "user":
-		if normalized.receiverID != senderBot.OwnerID.String() {
-			return ErrMessageTargetForbidden
-		}
-	default:
-		return ErrInvalidMessageRoute
-	}
-
-	return nil
+	return uniqueSortedTopics(topics), nil
 }
 
 func (s *MessageService) userMatchesDirectRoute(ctx context.Context, userID uuid.UUID, route messageRoute) (bool, error) {
@@ -318,22 +163,6 @@ func (s *MessageService) userOwnsBot(ctx context.Context, userID, botID uuid.UUI
 	return bot.OwnerID == userID, nil
 }
 
-func (s *MessageService) canUserTargetBot(ctx context.Context, userID, botID uuid.UUID) (bool, error) {
-	bot, err := s.botRepo.GetByID(ctx, botID)
-	if err != nil {
-		return false, nil
-	}
-	return bot.OwnerID == userID || bot.IsPublic, nil
-}
-
-func (s *MessageService) canBotTargetBot(ctx context.Context, ownerID, botID uuid.UUID) (bool, error) {
-	bot, err := s.botRepo.GetByID(ctx, botID)
-	if err != nil {
-		return false, nil
-	}
-	return bot.OwnerID == ownerID || bot.IsPublic, nil
-}
-
 func (s *MessageService) isUserGroupMember(ctx context.Context, userID, groupID uuid.UUID) (bool, error) {
 	group, err := s.groupRepo.GetByID(ctx, groupID)
 	if err != nil {
@@ -354,19 +183,6 @@ func (s *MessageService) isBotGroupMember(ctx context.Context, groupID, botID uu
 		return false, nil
 	}
 	return s.groupRepo.IsBotMember(ctx, groupID, botID)
-}
-
-func decodePublishMessage(topic string, payload json.RawMessage) (normalizedMessage, error) {
-	if len(payload) == 0 {
-		return normalizedMessage{}, errors.New("message payload is required")
-	}
-
-	var msgPayload MessagePayload
-	if err := json.Unmarshal(payload, &msgPayload); err != nil {
-		return normalizedMessage{}, errors.New("invalid publish payload")
-	}
-
-	return normalizeIncomingMessage(topic, msgPayload), nil
 }
 
 func validateNormalizedMessage(normalized normalizedMessage) error {
@@ -400,4 +216,33 @@ func parseUUIDValue(raw string) (uuid.UUID, bool) {
 		return uuid.UUID{}, false
 	}
 	return parsed, true
+}
+
+const messageTopicPrefix = "chat"
+
+func uniqueSortedTopics(topics []string) []string {
+	if len(topics) == 0 {
+		return []string{}
+	}
+
+	set := make(map[string]struct{}, len(topics))
+	unique := make([]string, 0, len(topics))
+	for _, topic := range topics {
+		topic = NormalizeConversationReference(topic)
+		if topic == "" {
+			continue
+		}
+		if _, exists := set[topic]; exists {
+			continue
+		}
+		set[topic] = struct{}{}
+		unique = append(unique, topic)
+	}
+
+	sort.Strings(unique)
+	return unique
+}
+
+func UniqueTopicsForExport(topics []string) []string {
+	return uniqueSortedTopics(topics)
 }

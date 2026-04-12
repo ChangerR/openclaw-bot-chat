@@ -30,8 +30,8 @@ export interface GroupInfo {
   topic?: string;
 }
 
-export interface DialogInfo {
-  dialog_id: string;
+export interface ConversationInfo {
+  conversation_id: string;
   topic?: string;
   title?: string;
   last_seq?: number;
@@ -41,7 +41,7 @@ export interface DialogInfo {
 
 export interface Subscription {
   topic: string;
-  qos?: number;
+  qos: number;
 }
 
 export interface Checkpoint {
@@ -52,21 +52,27 @@ export interface Checkpoint {
   updated_at?: number;
 }
 
-export interface TransportPolicy {
-  heartbeat_interval?: number;
-  heartbeat_interval_ms?: number;
-  base_reconnect_delay_ms?: number;
-  max_reconnect_delay_ms?: number;
-  topics?: string[];
+export interface BrokerInfo {
+  tcp_url: string;
+  ws_url?: string;
+  username?: string;
+  password?: string;
+  qos?: number;
+}
+
+export interface HistoryBootstrap {
+  max_catchup_batch?: number;
 }
 
 export interface BootstrapResponse {
   bot: BotInfo;
+  broker: BrokerInfo;
+  client_id: string;
   groups: GroupInfo[];
-  dialogs: DialogInfo[];
+  conversations: ConversationInfo[];
   subscriptions: Subscription[];
-  checkpoints: Checkpoint[];
-  transport_policy: TransportPolicy;
+  publish_topics: string[];
+  history?: HistoryBootstrap;
 }
 
 export interface OpenClawRequest {
@@ -85,81 +91,15 @@ export interface OpenClawAgent {
 }
 
 export interface BotChatOutgoingMessage {
-  dialog_id: string;
   message_id: string;
+  topic: string;
+  conversation_id: string;
+  from_type: BotChatSenderType;
+  from_id: string;
+  to_type?: BotChatRouteTargetType;
+  to_id?: string;
   content_type: BotChatContentType;
   body: string;
   meta?: Record<string, unknown>;
-  reply_to_message_id?: string;
-  topic?: string;
-}
-
-export interface BotChatRuntimeHeartbeat {
-  session_id: string;
-  bot_id: string;
-  subscriptions: string[];
-  checkpoints: Checkpoint[];
   timestamp: number;
 }
-
-export interface BotChatHelloFrame {
-  type: "hello";
-  session_id: string;
-  heartbeat_interval?: number;
-  heartbeat_interval_ms?: number;
-  bot?: BotInfo;
-}
-
-export interface BotChatAckFrame {
-  type: "ack";
-  id?: string;
-  payload?: unknown;
-}
-
-export interface BotChatErrorFrame {
-  type: "error";
-  id?: string;
-  error: string;
-}
-
-export interface BotChatWsMessageFrame {
-  type: "message";
-  id?: string;
-  topic: string;
-  payload: unknown;
-}
-
-export interface BotChatWsPingFrame {
-  type: "ping" | "pong";
-  id?: string;
-}
-
-export interface BotChatWsSubscribeFrame {
-  type: "subscribe" | "unsubscribe";
-  id?: string;
-  topic: string;
-}
-
-export interface BotChatWsPublishFrame {
-  type: "publish";
-  id?: string;
-  topic: string;
-  payload: unknown;
-}
-
-export type BotChatWsFrame =
-  | BotChatHelloFrame
-  | BotChatAckFrame
-  | BotChatErrorFrame
-  | BotChatWsMessageFrame
-  | BotChatWsPingFrame
-  | BotChatWsSubscribeFrame
-  | BotChatWsPublishFrame
-  | Record<string, unknown>;
-
-export type BotChatWsState =
-  | "idle"
-  | "connecting"
-  | "open"
-  | "reconnecting"
-  | "closed";

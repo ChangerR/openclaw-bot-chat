@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -30,27 +28,29 @@ services:
       timeout: 5s
       retries: 5
 
-  mosquitto:
-    image: eclipse-mosquitto:2
-    expose:
-      - "1883"
-      - "9001"
+  emqx:
+    image: emqx/emqx:5.8.5
+    ports:
+      - "${MQTT_TCP_PORT_MAPPING:-1883:1883}"
+      - "${MQTT_WS_PORT_MAPPING:-8083:8083}"
+      - "${EMQX_DASHBOARD_PORT_MAPPING:-18083:18083}"
     environment:
+      EMQX_NODE__NAME: emqx@127.0.0.1
+      EMQX_LOG__CONSOLE_HANDLER__LEVEL: warning
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USERNAME:-admin}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-public}
       MQTT_USERNAME: ${MQTT_USERNAME:-openclaw_backend}
       MQTT_PASSWORD: ${MQTT_PASSWORD:-change-me-in-production}
     command:
       - /bin/sh
       - -c
       - |
-        mosquitto_passwd -b -c /mosquitto/config/passwd "$$MQTT_USERNAME" "$$MQTT_PASSWORD"
-        chown mosquitto:mosquitto /mosquitto/config/passwd
-        chmod 600 /mosquitto/config/passwd
-        exec mosquitto -c /mosquitto/config/mosquitto.conf
+        printf 'user_id,password,is_superuser\n%s,%s,false\n' "$$MQTT_USERNAME" "$$MQTT_PASSWORD" > /opt/emqx/etc/auth-built-in-db-bootstrap.csv
+        exec /opt/emqx/bin/emqx foreground
     volumes:
-      - ./backend/mosquitto.conf:/mosquitto/config/mosquitto.conf
-      - ./backend/mosquitto.acl:/mosquitto/config/aclfile
+      - ./broker/emqx/emqx.conf:/opt/emqx/etc/emqx.conf:ro
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_pub -u \"$${MQTT_USERNAME}\" -P \"$${MQTT_PASSWORD}\" -t healthcheck/ping -m ok -q 0"]
+      test: ["CMD-SHELL", "/opt/emqx/bin/emqx ctl status | grep -q 'is started'"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -64,7 +64,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      mosquitto:
+      emqx:
         condition: service_healthy
     volumes:
       - ./backend/config.yaml:/app/config.yaml
@@ -77,10 +77,12 @@ services:
       - DATABASE_DBNAME=${DATABASE_DBNAME:-openclaw_bot_chat}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - MQTT_BROKER=tcp://mosquitto:1883
+      - MQTT_BROKER=tcp://emqx:1883
       - MQTT_USERNAME=${MQTT_USERNAME:-openclaw_backend}
       - MQTT_PASSWORD=${MQTT_PASSWORD:-change-me-in-production}
       - MQTT_TOPIC_PREFIX=${MQTT_TOPIC_PREFIX:-chat}
+      - MQTT_TCP_PUBLIC_URL=${MQTT_TCP_PUBLIC_URL:-mqtt://127.0.0.1:1883}
+      - MQTT_WS_PUBLIC_URL=${MQTT_WS_PUBLIC_URL:-ws://127.0.0.1:8083/mqtt}
       - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
       - APP_MODE=${APP_MODE:-release}
       - LOG_LEVEL=${LOG_LEVEL:-info}
@@ -112,7 +114,6 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
-        NEXT_PUBLIC_API_WS_HOST: ${NEXT_PUBLIC_API_WS_HOST:-}
     ports:
       - "${FRONTEND_PORT_MAPPING:-3000:3000}"
     depends_on:
@@ -121,6 +122,27 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - NODE_ENV=production
+
+  testagent:
+    image: node:22
+    profiles: ["testagent"]
+    working_dir: /workspace
+    depends_on:
+      backend:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+    volumes:
+      - ./:/workspace
+    environment:
+      - BOT_CHAT_BACKEND_URL=${BOT_CHAT_BACKEND_URL:-http://backend:8080}
+      - BOT_CHAT_BOT_KEY=${BOT_CHAT_BOT_KEY:-}
+      - BOT_CHAT_BOT_ID=${BOT_CHAT_BOT_ID:-}
+      - BOT_CHAT_MQTT_TCP_URL=${BOT_CHAT_MQTT_TCP_URL:-mqtt://emqx:1883}
+      - OPENAI_COMPAT_BASE_URL=${OPENAI_COMPAT_BASE_URL:-}
+      - OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
+      - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-}
+    command: ["bash", "-lc", "./scripts/test-agent.sh start"]
 
 volumes:
   postgres_data:

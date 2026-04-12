@@ -1,8 +1,4 @@
-import type {
-  BootstrapResponse,
-  BotChatOutgoingMessage,
-  BotChatRuntimeHeartbeat,
-} from "../types";
+import type { BootstrapResponse } from "../types";
 
 interface RequestOptions {
   body?: unknown;
@@ -34,20 +30,8 @@ export class BotChatHttpClient {
     return this.request<BootstrapResponse>("GET", "/api/v1/bot-runtime/bootstrap");
   }
 
-  async sendMessage(message: BotChatOutgoingMessage): Promise<unknown> {
-    return this.request("POST", "/api/v1/bot-runtime/messages", {
-      body: message,
-    });
-  }
-
-  async sendHeartbeat(heartbeat: BotChatRuntimeHeartbeat): Promise<unknown> {
-    return this.request("POST", "/api/v1/bot-runtime/heartbeat", {
-      body: heartbeat,
-    });
-  }
-
-  async getDialogMessages(
-    dialogId: string,
+  async getConversationMessages(
+    conversationId: string,
     options: {
       afterSeq?: number;
       limit?: number;
@@ -55,7 +39,7 @@ export class BotChatHttpClient {
   ): Promise<unknown[]> {
     const payload = await this.request<unknown>(
       "GET",
-      `/api/v1/bot-runtime/dialogs/${encodeURIComponent(dialogId)}/messages`,
+      `/api/v1/bot-runtime/messages/${encodeConversationPath(conversationId)}`,
       {
         query: {
           after_seq: options.afterSeq,
@@ -149,4 +133,11 @@ function parseJson(value: string): unknown {
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function encodeConversationPath(conversationId: string): string {
+  return conversationId
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 }

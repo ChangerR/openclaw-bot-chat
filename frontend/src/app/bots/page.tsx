@@ -35,6 +35,7 @@ export default function BotsPage() {
   const [selectedBot, setSelectedBot] = useState<Bot | null>(null)
   const [showKeyModalBot, setShowKeyModalBot] = useState<Bot | null>(null)
   const [runtimeActivity, setRuntimeActivity] = useState<Record<string, string | null>>({})
+  const [showMobileList, setShowMobileList] = useState(true)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -71,6 +72,7 @@ export default function BotsPage() {
     openBotConversation(bot)
     setSelectedBot(bot)
     setView('chat')
+    setShowMobileList(false)
   }
 
   const currentMessages = currentConversation ? messages.get(currentConversation.id) || [] : []
@@ -81,12 +83,12 @@ export default function BotsPage() {
   return (
     <AppLayout>
       {/* Column 2: Bot List */}
-      <aside className="w-[300px] h-screen bg-white/65 backdrop-blur-xl border-r border-white/20 flex flex-col overflow-hidden">
+      <aside className={`w-full md:w-[300px] h-full bg-white/65 backdrop-blur-xl border-r border-white/20 flex flex-col overflow-hidden flex-shrink-0 ${showMobileList ? 'flex' : 'hidden md:flex'}`}>
         <div className="p-4 border-b border-white/20 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold text-slate-800 tracking-tight">Bots</h2>
             <button
-              onClick={() => setView('create')}
+              onClick={() => { setView('create'); setShowMobileList(false); }}
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-sky-500 text-white shadow-sm hover:bg-sky-600 transition-colors"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -112,7 +114,7 @@ export default function BotsPage() {
           {filteredBots.length === 0 ? (
             <div className="p-8 text-center text-slate-400 space-y-2">
               <p className="text-sm font-medium">No bots found</p>
-              <Button size="sm" variant="ghost" onClick={() => setView('create')}>Create one</Button>
+              <Button size="sm" variant="ghost" onClick={() => { setView('create'); setShowMobileList(false); }}>Create one</Button>
             </div>
           ) : (
             filteredBots.map(bot => (
@@ -131,12 +133,18 @@ export default function BotsPage() {
       </aside>
 
       {/* Column 3: Main Area */}
-      <section className="flex-1 h-screen flex flex-col bg-white/95 relative overflow-hidden">
+      <section className={`flex-1 h-full flex flex-col bg-white/95 relative overflow-hidden ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
         {view === 'chat' && currentConversation ? (
           <>
             {/* Chat Header */}
-            <header className="h-[72px] px-6 flex items-center justify-between border-b border-slate-100 bg-white/80 backdrop-blur-md z-10">
-              <div className="flex items-center gap-3">
+            <header className="h-[60px] md:h-[72px] px-4 md:px-6 flex items-center justify-between border-b border-slate-100 bg-white/80 backdrop-blur-md z-10">
+              <div className="flex items-center gap-2 md:gap-3">
+                <button
+                  onClick={() => setShowMobileList(true)}
+                  className="md:hidden p-1.5 -ml-1.5 text-slate-400 hover:text-sky-500 rounded-lg"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
+                </button>
                 <Avatar name={currentConversation.name} src={currentConversation.avatar} size="md" />
                 <div>
                   <h3 className="font-bold text-slate-800">{currentConversation.name}</h3>
@@ -194,22 +202,28 @@ export default function BotsPage() {
           </>
         ) : view === 'create' || view === 'edit' ? (
           <div className="flex-1 overflow-y-auto p-12 max-w-2xl mx-auto w-full">
-            <header className="mb-8">
-              <h2 className="text-3xl font-bold text-slate-800 tracking-tight">
+            <header className="mb-6 md:mb-8 flex items-start gap-3">
+              <button onClick={() => { setView('chat'); setShowMobileList(true); }} className="md:hidden mt-1 p-1 -ml-2 text-slate-400 hover:text-sky-500">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
+              </button>
+              <div>
+                <h2 className="text-2xl md:text-3xl font-bold text-slate-800 tracking-tight">
                 {view === 'create' ? 'Create New Bot' : `Configure ${selectedBot?.name}`}
               </h2>
               <p className="text-slate-500 mt-1">
                 {view === 'create' ? 'Give your AI bot a name and personality.' : 'Update your bot details and manage API keys.'}
               </p>
+            </div>
             </header>
             
             <CreateEditBotForm
               bot={view === 'edit' ? selectedBot : null}
-              onCancel={() => setView('chat')}
+              onCancel={() => { setView('chat'); setShowMobileList(true); }}
               onSuccess={(bot) => {
                 void refreshBots()
                 setSelectedBot(bot)
                 setView('chat')
+                setShowMobileList(false)
               }}
               onShowKeys={(bot) => setShowKeyModalBot(bot)}
             />

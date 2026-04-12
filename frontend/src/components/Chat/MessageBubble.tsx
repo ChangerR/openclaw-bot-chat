@@ -21,8 +21,8 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
 
   const processContent = (text: string) => {
     if (!mentions.length) {
-      // Fallback: match basic @mentions without spaces
-      return text.replace(/(```[\s\S]*?```|`[^`]+`)|(@[a-zA-Z0-9_\-\u4e00-\u9fa5]+)/g, (match, code, mention) => {
+      // Fallback: match basic @mentions or ＠mentions without spaces
+      return text.replace(/(```[\s\S]*?```|`[^`]+`)|([@＠][a-zA-Z0-9_\-\u4e00-\u9fa5]+)/g, (match, code, mention) => {
         if (code) return code;
         return `[${mention}](mention://${encodeURIComponent(mention.slice(1))})`;
       });
@@ -34,7 +34,7 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
       .sort((a, b) => b.length - a.length)
       .join('|');
       
-    const regex = new RegExp(`(\`\`\`[\\s\\S]*?\`\`\`|\`[^\`]+\`)|(@(?:${escapedMentions})|@[a-zA-Z0-9_\\-\\u4e00-\\u9fa5]+)`, 'g');
+    const regex = new RegExp(`(\`\`\`[\\s\\S]*?\`\`\`|\`[^\`]+\`)|([@＠](?:${escapedMentions})|[@＠][a-zA-Z0-9_\\-\\u4e00-\\u9fa5]+)`, 'g');
     
     return text.replace(regex, (match, code, mention) => {
       if (code) return code;
@@ -54,7 +54,7 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
 
   return (
     <div className={`flex w-full mb-6 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-      <div className={`flex max-w-[80%] ${isOwn ? 'flex-row-reverse' : 'flex-row'} items-end gap-3`}>
+      <div className={`flex max-w-[90%] md:max-w-[80%] ${isOwn ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 md:gap-3`}>
         {!isOwn && (
           <Avatar
             name={message.from.name || 'Bot'}
@@ -72,12 +72,14 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
           )}
           
           <div
-            className={`px-4 py-3 shadow-sm transition-all ${
-              isOwn
-                ? 'bg-[#0EA5E9] text-white rounded-[16px_16px_4px_16px]'
+            className={`shadow-sm transition-all ${
+              message.content.type === 'image' && message.content.meta?.is_sticker
+                ? 'bg-transparent shadow-none'
+                : isOwn
+                ? 'bg-[#0EA5E9] text-white rounded-[16px_16px_4px_16px] px-4 py-3'
                 : isBot
-                ? 'bg-sky-50 text-slate-800 rounded-[16px_16px_16px_4px] border border-sky-100'
-                : 'bg-slate-100 text-slate-800 rounded-[16px_16px_16px_4px] border border-slate-200'
+                ? 'bg-sky-50 text-slate-800 rounded-[16px_16px_16px_4px] border border-sky-100 px-4 py-3'
+                : 'bg-slate-100 text-slate-800 rounded-[16px_16px_16px_4px] border border-slate-200 px-4 py-3'
             }`}
           >
             {message.content.type === 'text' && (
@@ -89,7 +91,7 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
             {message.content.type === 'image' && (
               <div className="space-y-2">
                 {imageURL ? (
-                  <div className="rounded-lg overflow-hidden max-w-xs">
+                  <div className={`rounded-lg overflow-hidden ${message.content.meta?.is_sticker ? 'max-w-[120px] md:max-w-[160px]' : 'max-w-xs'}`}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={imageURL} alt={imageName} className="w-full h-auto object-cover" />
                   </div>
@@ -98,7 +100,7 @@ export function MessageBubble({ message, isOwn, showSenderName, mentions = [] }:
                     Image unavailable
                   </div>
                 )}
-                {message.content.body && message.content.body !== imageName && (
+                {message.content.body && message.content.body !== imageName && !message.content.meta?.is_sticker && (
                   <p className={`text-sm whitespace-pre-wrap break-words ${isOwn ? 'text-white/90' : 'text-slate-700'}`}>
                     {message.content.body}
                   </p>

@@ -14,5 +14,4 @@ cd "$REPO_ROOT/frontend"
 
 exec env \
   NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
-  NEXT_PUBLIC_API_WS_HOST="$NEXT_PUBLIC_API_WS_HOST" \
   npm run dev -- --hostname "$FRONTEND_BIND_HOST" --port "$FRONTEND_BIND_PORT" "$@"
