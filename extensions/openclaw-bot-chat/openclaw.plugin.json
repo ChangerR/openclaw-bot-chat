@@ -1,0 +1,23 @@
+{
+  "name": "@openclaw/extension-bot-chat",
+  "version": "0.1.0",
+  "description": "OpenClaw BotChat channel plugin",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "setupEntry": "./setup-entry.ts",
+    "channel": {
+      "id": "bot-chat",
+      "label": "BotChat",
+      "selectionLabel": "BotChat (MQTT Bridge)",
+      "docsPath": "/channels/bot-chat",
+      "docsLabel": "bot-chat",
+      "blurb": "Bridge OpenClaw to BotChat backend and MQTT."
+    },
+    "compat": {
+      "pluginApi": ">=2026.4.8"
+    },
+    "build": {
+      "openclawVersion": "2026.4.8"
+    }
+  }
+}

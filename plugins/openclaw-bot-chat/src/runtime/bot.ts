@@ -28,6 +28,7 @@ import type {
   Checkpoint,
   ConversationInfo,
   OpenClawAgent,
+  PermissionApprover,
 } from "../types";
 import {
   buildChannelScopeKey,
@@ -47,6 +48,7 @@ export class OpenClawBotRuntime {
   constructor(
     private readonly config: PluginConfig,
     private readonly agent: OpenClawAgent,
+    private readonly permissionApprover?: PermissionApprover,
   ) {
     const enabledBots = getEnabledBots(config);
     if (enabledBots.length === 0) {
@@ -54,7 +56,8 @@ export class OpenClawBotRuntime {
     }
 
     this.runtimes = enabledBots.map(
-      (botConfig) => new ManagedBotRuntime(config, botConfig, agent),
+      (botConfig) =>
+        new ManagedBotRuntime(config, botConfig, agent, permissionApprover),
     );
   }
 
@@ -95,6 +98,7 @@ class ManagedBotRuntime {
     private readonly config: PluginConfig,
     private readonly botConfig: ResolvedBotConfig,
     private readonly agent: OpenClawAgent,
+    private readonly permissionApprover?: PermissionApprover,
   ) {
     const botStateDir = path.join(
       config.stateDir,
@@ -354,14 +358,40 @@ class ManagedBotRuntime {
           this.checkpointStore.get(message.dialog_id);
 
         if (!routed.permission.allowed) {
-          this.logPermissionDenied(routed.permission, routed.channel, message);
-          const existingSessionId =
-            this.channelState.getSession(routed.channel, message.dialog_id) ??
-            this.sessionManager.get(message.dialog_id) ??
-            checkpoint?.session_id;
-          await this.saveCheckpoint(message, existingSessionId, routed.channel);
-          this.markMessageProcessed(message.message_id);
-          return;
+          const approval = await this.resolvePermissionApproval(
+            routed,
+            message,
+          );
+          if (approval.allowed) {
+            this.logger.info("message.permission_approved", {
+              messageId: message.message_id,
+              dialogId: message.dialog_id,
+              botId: this.botId,
+              approvalReason: approval.reason,
+            });
+          } else {
+            this.logPermissionDenied(routed.permission, routed.channel, message);
+            if (approval.notifyMessage && this.botId) {
+              await this.publishPermissionDeniedNotice(
+                message,
+                this.botId,
+                approval.notifyMessage,
+              );
+            }
+          }
+          if (!approval.allowed) {
+            const existingSessionId =
+              this.channelState.getSession(routed.channel, message.dialog_id) ??
+              this.sessionManager.get(message.dialog_id) ??
+              checkpoint?.session_id;
+            await this.saveCheckpoint(
+              message,
+              existingSessionId,
+              routed.channel,
+            );
+            this.markMessageProcessed(message.message_id);
+            return;
+          }
         }
 
         const sessionId =
@@ -666,6 +696,85 @@ class ManagedBotRuntime {
       channelType: channel.type,
       userId: message.from_id,
     });
+  }
+
+  private async resolvePermissionApproval(
+    routed: ReturnType<typeof routeIncomingMessage>,
+    message: BotChatMessage,
+  ): Promise<{ allowed: boolean; reason?: string; notifyMessage?: string }> {
+    if (routed.permission.allowed) {
+      return { allowed: true };
+    }
+    if (!this.permissionApprover || !this.botId) {
+      return {
+        allowed: false,
+        notifyMessage: this.config.permissionDeniedReply,
+      };
+    }
+
+    try {
+      const decision = await this.permissionApprover.approve({
+        bot_id: this.botId,
+        action: routed.action,
+        permission: routed.permission,
+        channel: {
+          id: routed.channel.id,
+          type: routed.channel.type,
+          bot_id: routed.channel.botId,
+          ...(routed.channel.userId ? { user_id: routed.channel.userId } : {}),
+          ...(routed.channel.guildId
+            ? { guild_id: routed.channel.guildId }
+            : {}),
+          ...(routed.channel.groupId
+            ? { group_id: routed.channel.groupId }
+            : {}),
+        },
+        message,
+      });
+      if (decision.approved) {
+        return {
+          allowed: true,
+          reason: decision.reason,
+        };
+      }
+      return {
+        allowed: false,
+        reason: decision.reason,
+        notifyMessage:
+          decision.notify_message ??
+          (decision.notify_user ? this.config.permissionDeniedReply : undefined),
+      };
+    } catch (error) {
+      this.logger.error(
+        "permission.approval.failed",
+        {
+          messageId: message.message_id,
+          dialogId: message.dialog_id,
+          reason: routed.permission.reason,
+        },
+        error,
+      );
+      return {
+        allowed: false,
+        notifyMessage: this.config.permissionDeniedReply,
+      };
+    }
+  }
+
+  private async publishPermissionDeniedNotice(
+    sourceMessage: BotChatMessage,
+    botId: string,
+    content: string,
+  ): Promise<void> {
+    const outgoing = toBotChatOutgoingMessage(
+      { content },
+      sourceMessage,
+      botId,
+    );
+    if (!outgoing) {
+      return;
+    }
+    await this.dispatchReply(outgoing, sourceMessage, botId);
   }
 
   private logPrefix(): string {

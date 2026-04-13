@@ -1,3 +1,5 @@
+import type { PermissionCheck } from "./permissions";
+
 export type BotChatContentType = "text" | "image" | "file";
 export type BotChatSenderType = "user" | "bot" | "system";
 export type BotChatRouteTargetType = BotChatSenderType | "group" | "channel";
@@ -88,6 +90,35 @@ export interface OpenClawResponse {
 
 export interface OpenClawAgent {
   respond(request: OpenClawRequest): Promise<OpenClawResponse>;
+}
+
+export interface PermissionApprovalRequest {
+  bot_id: string;
+  action: string;
+  permission: PermissionCheck;
+  channel: {
+    id: string;
+    type: "dm" | "group" | "channel";
+    bot_id: string;
+    user_id?: string;
+    guild_id?: string;
+    group_id?: string;
+  };
+  message: BotChatMessage;
+}
+
+export interface PermissionApprovalDecision {
+  approved: boolean;
+  reason?: string;
+  notify_user?: boolean;
+  notify_message?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PermissionApprover {
+  approve(
+    request: PermissionApprovalRequest,
+  ): Promise<PermissionApprovalDecision>;
 }
 
 export interface BotChatOutgoingMessage {

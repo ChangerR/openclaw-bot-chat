@@ -39,6 +39,11 @@ cp ./scripts/test-agent.env.example ./scripts/test-agent.env
 - `OPENAI_COMPAT_MCP_CONFIG`：指向 MCP JSON 配置文件
 - `OPENAI_COMPAT_MCP_SERVERS_JSON`：直接以内联 JSON 提供 `mcpServers`
 - `OPENAI_COMPAT_MCP_MAX_TOOL_ROUNDS`：单次请求最多工具轮数，默认 `6`
+- `OPENCLAW_PERMISSION_APPROVAL_ENABLED`：是否启用权限审批（默认 `false`）
+- `OPENCLAW_PERMISSION_APPROVAL_HANDLER`：本地审批 handler 路径（优先）
+- `OPENCLAW_PERMISSION_APPROVAL_URL`：审批 HTTP 接口地址
+- `OPENCLAW_PERMISSION_APPROVAL_TIMEOUT_MS`：审批超时毫秒（默认 `8000`）
+- `OPENCLAW_PERMISSION_DENIED_REPLY`：审批拒绝时回复文案（可选）
 
 辅助命令：
 
@@ -57,6 +62,15 @@ MCP 说明：
 - 默认 `openai-compatible-handler.cjs` 已支持可选 MCP
 - 它会启动配置里的 stdio MCP server，把工具映射成 OpenAI-compatible `tools`
 - 模型返回 tool calls 后，handler 会自动调用 MCP 工具并继续对话轮询
+
+权限审批说明：
+
+- 先执行插件内静态权限校验（`channels/users/groupPolicy/actions`）
+- 静态校验拒绝时，可配置审批扩展（二选一）：
+  - `OPENCLAW_PERMISSION_APPROVAL_HANDLER`
+  - `OPENCLAW_PERMISSION_APPROVAL_URL`
+- 审批通过：继续执行消息处理并调用 agent
+- 审批拒绝：跳过 agent，并可自动回复拒绝说明
 
 ## Broker 可替换性
 
