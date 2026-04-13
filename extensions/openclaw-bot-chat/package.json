@@ -1,0 +1,46 @@
+{
+  "name": "@openclaw/extension-bot-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw extension for BotChat bridge (MQTT + permission approval)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "setupEntry": "./setup-entry.ts",
+    "channel": {
+      "id": "bot-chat",
+      "label": "BotChat",
+      "selectionLabel": "BotChat (MQTT Bridge)",
+      "detailLabel": "BotChat Bridge",
+      "docsPath": "/channels/bot-chat",
+      "docsLabel": "bot-chat",
+      "blurb": "Bridge OpenClaw to BotChat backend and MQTT.",
+      "markdownCapable": true
+    },
+    "install": {
+      "npmSpec": "@openclaw/extension-bot-chat",
+      "defaultChoice": "npm"
+    },
+    "compat": {
+      "pluginApi": ">=2026.4.8"
+    },
+    "build": {
+      "openclawVersion": "2026.4.8"
+    },
+    "bundle": {
+      "stageRuntimeDependencies": true
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.38",
+    "mqtt": "^5.15.1"
+  }
+}

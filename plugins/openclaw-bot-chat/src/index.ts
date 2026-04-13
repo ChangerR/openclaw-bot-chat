@@ -8,7 +8,14 @@ import {
   summarizeValue,
 } from "./logger";
 import { OpenClawBotRuntime } from "./runtime/bot";
-import type { OpenClawAgent, OpenClawRequest, OpenClawResponse } from "./types";
+import type {
+  OpenClawAgent,
+  OpenClawRequest,
+  OpenClawResponse,
+  PermissionApprovalDecision,
+  PermissionApprovalRequest,
+  PermissionApprover,
+} from "./types";
 
 const logger = createRuntimeLogger("[openclaw-bot-chat:agent]");
 
@@ -28,10 +35,14 @@ export async function main(): Promise<void> {
     botKeys: Object.keys(config.bots),
     openClawAgentUrl: config.openClawAgentUrl,
     openClawAgentHandler: config.openClawAgentHandler,
+    permissionApprovalEnabled: config.permissionApprovalEnabled,
+    permissionApprovalUrl: config.permissionApprovalUrl,
+    permissionApprovalHandler: config.permissionApprovalHandler,
     accessKeyPreview: config.accessKey ? maskSecret(config.accessKey) : undefined,
   });
   const agent = await createOpenClawAgent(config);
-  const runtime = new OpenClawBotRuntime(config, agent);
+  const permissionApprover = await createPermissionApprover(config);
+  const runtime = new OpenClawBotRuntime(config, agent, permissionApprover);
 
   const shutdown = async (signal: string): Promise<void> => {
     console.info(`[openclaw-bot-chat] shutting down on ${signal}`);
@@ -68,6 +79,27 @@ export async function createOpenClawAgent(
       };
     },
   };
+}
+
+export async function createPermissionApprover(
+  config: PluginConfig,
+): Promise<PermissionApprover | undefined> {
+  if (!config.permissionApprovalEnabled) {
+    return undefined;
+  }
+  if (config.permissionApprovalHandler) {
+    return loadApprovalHandler(config.permissionApprovalHandler);
+  }
+  if (config.permissionApprovalUrl) {
+    return createApprovalHttpClient(
+      config.permissionApprovalUrl,
+      config.permissionApprovalTimeoutMs,
+    );
+  }
+  logger.warn("permission.approval.enabled_but_missing_handler", {
+    permissionApprovalEnabled: config.permissionApprovalEnabled,
+  });
+  return undefined;
 }
 
 async function loadHandlerAgent(handlerPath: string): Promise<OpenClawAgent> {
@@ -152,6 +184,77 @@ function createHttpAgent(url: string, timeoutMs: number): OpenClawAgent {
   );
 }
 
+async function loadApprovalHandler(
+  handlerPath: string,
+): Promise<PermissionApprover> {
+  const resolvedPath = path.isAbsolute(handlerPath)
+    ? handlerPath
+    : path.resolve(process.cwd(), handlerPath);
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const loaded = require(resolvedPath) as unknown;
+  const candidate =
+    readApproveFunction(loaded) ??
+    (loaded &&
+    typeof loaded === "object" &&
+    "default" in loaded
+      ? readApproveFunction((loaded as { default?: unknown }).default)
+      : undefined);
+  if (!candidate) {
+    throw new Error(
+      `permission handler module ${resolvedPath} must export approve(request)`,
+    );
+  }
+
+  logger.info("permission.handler.loaded", {
+    handlerPath: resolvedPath,
+  });
+
+  return {
+    async approve(
+      request: PermissionApprovalRequest,
+    ): Promise<PermissionApprovalDecision> {
+      return await candidate(request);
+    },
+  };
+}
+
+function createApprovalHttpClient(
+  url: string,
+  timeoutMs: number,
+): PermissionApprover {
+  logger.info("permission.http.configured", { url, timeoutMs });
+  return {
+    async approve(
+      request: PermissionApprovalRequest,
+    ): Promise<PermissionApprovalDecision> {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(request),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      const rawText = await response.text();
+      const parsed = rawText ? parseJson(rawText) : undefined;
+      if (!response.ok) {
+        const error = new Error(
+          `permission approval request failed with ${response.status}: ${rawText}`,
+        ) as AgentHttpError;
+        error.status = response.status;
+        error.responseBody = parsed ?? rawText;
+        throw error;
+      }
+      if (parsed && typeof parsed === "object" && "data" in parsed) {
+        return parsed["data"] as PermissionApprovalDecision;
+      }
+      return (parsed as PermissionApprovalDecision) ?? { approved: false };
+    },
+  };
+}
+
 function createInstrumentedAgent(
   kind: "handler" | "http",
   baseFields: Record<string, unknown>,
@@ -211,6 +314,26 @@ function readRespondFunction(
     return value["respond"] as (
       request: OpenClawRequest,
     ) => Promise<OpenClawResponse> | OpenClawResponse;
+  }
+  return undefined;
+}
+
+function readApproveFunction(
+  value: unknown,
+):
+  | ((
+      request: PermissionApprovalRequest,
+    ) =>
+      | Promise<PermissionApprovalDecision>
+      | PermissionApprovalDecision)
+  | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  if ("approve" in value && typeof value["approve"] === "function") {
+    return value["approve"] as (
+      request: PermissionApprovalRequest,
+    ) => Promise<PermissionApprovalDecision> | PermissionApprovalDecision;
   }
   return undefined;
 }
