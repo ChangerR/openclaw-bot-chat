@@ -23,6 +23,7 @@ export interface BotConfig {
 export interface PluginConfig {
   botChatBaseUrl: string;
   mqttTcpUrl?: string;
+  mqttWsUrl?: string;
   botId?: string;
   accessKey?: string;
   configPath: string;
@@ -65,6 +66,10 @@ export async function loadConfig(cwd = process.cwd()): Promise<PluginConfig> {
   const mqttTcpUrl = readString(
     process.env.BOT_CHAT_MQTT_TCP_URL,
     readString(fileConfig["BOT_CHAT_MQTT_TCP_URL"], readString(fileConfig["mqttTcpUrl"])),
+  );
+  const mqttWsUrl = readString(
+    process.env.BOT_CHAT_MQTT_WS_URL,
+    readString(fileConfig["BOT_CHAT_MQTT_WS_URL"], readString(fileConfig["mqttWsUrl"])),
   );
   const accessKey = readString(
     process.env.BOT_CHAT_BOT_KEY,
@@ -118,6 +123,7 @@ export async function loadConfig(cwd = process.cwd()): Promise<PluginConfig> {
   const config: PluginConfig = {
     botChatBaseUrl: normalizeBaseUrl(botChatBaseUrl),
     ...(mqttTcpUrl ? { mqttTcpUrl } : {}),
+    ...(mqttWsUrl ? { mqttWsUrl } : {}),
     configPath,
     stateDir,
     httpTimeoutMs: readInteger(
