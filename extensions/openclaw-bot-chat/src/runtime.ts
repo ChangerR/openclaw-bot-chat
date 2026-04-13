@@ -36,6 +36,8 @@ interface CheckpointRecord {
   updatedAt: number;
 }
 
+type MqttQos = 0 | 1 | 2;
+
 export interface BotChatRuntime {
   start(
     config: Record<string, unknown>,
@@ -67,7 +69,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
   private approver?: PermissionApprover;
   private statePath?: string;
   private checkpoints = new Map<string, CheckpointRecord>();
-  private qos = 1;
+  private qos: MqttQos = 1;
   private backendUrl?: string;
   private botKey?: string;
 
@@ -97,7 +99,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     });
 
     const bootstrap = await bootstrapBot(backendUrl, botKey);
-    this.qos = bootstrap.broker?.qos ?? 1;
+    this.qos = normalizeQos(bootstrap.broker?.qos);
     this.backendUrl = backendUrl;
     this.botKey = botKey;
     const brokerUrl =
@@ -525,4 +527,12 @@ function readNumber(value: unknown): number | undefined {
     }
   }
   return undefined;
+}
+
+function normalizeQos(value: unknown): MqttQos {
+  const parsed = readNumber(value);
+  if (parsed === 0 || parsed === 2) {
+    return parsed;
+  }
+  return 1;
 }
