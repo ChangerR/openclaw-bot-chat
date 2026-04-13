@@ -33,6 +33,11 @@ export interface PluginConfig {
   openClawAgentUrl?: string;
   openClawAgentHandler?: string;
   openClawAgentTimeoutMs: number;
+  permissionApprovalEnabled: boolean;
+  permissionApprovalUrl?: string;
+  permissionApprovalHandler?: string;
+  permissionApprovalTimeoutMs: number;
+  permissionDeniedReply?: string;
   bots: Record<string, BotConfig>;
   defaultBot?: string;
   defaultChannelPolicy: ChannelPolicy;
@@ -136,6 +141,14 @@ export async function loadConfig(cwd = process.cwd()): Promise<PluginConfig> {
       process.env.OPENCLAW_AGENT_TIMEOUT_MS,
       readInteger(fileConfig["openClawAgentTimeoutMs"], 60_000),
     ),
+    permissionApprovalEnabled: readBoolean(
+      process.env.OPENCLAW_PERMISSION_APPROVAL_ENABLED,
+      readBoolean(fileConfig["permissionApprovalEnabled"], false),
+    ),
+    permissionApprovalTimeoutMs: readInteger(
+      process.env.OPENCLAW_PERMISSION_APPROVAL_TIMEOUT_MS,
+      readInteger(fileConfig["permissionApprovalTimeoutMs"], 8_000),
+    ),
     bots,
     defaultChannelPolicy,
     defaultBot,
@@ -159,6 +172,30 @@ export async function loadConfig(cwd = process.cwd()): Promise<PluginConfig> {
   );
   if (openClawAgentHandler) {
     config.openClawAgentHandler = openClawAgentHandler;
+  }
+
+  const permissionApprovalUrl = readString(
+    process.env.OPENCLAW_PERMISSION_APPROVAL_URL,
+    readString(fileConfig["permissionApprovalUrl"]),
+  );
+  if (permissionApprovalUrl) {
+    config.permissionApprovalUrl = permissionApprovalUrl;
+  }
+
+  const permissionApprovalHandler = readString(
+    process.env.OPENCLAW_PERMISSION_APPROVAL_HANDLER,
+    readString(fileConfig["permissionApprovalHandler"]),
+  );
+  if (permissionApprovalHandler) {
+    config.permissionApprovalHandler = permissionApprovalHandler;
+  }
+
+  const permissionDeniedReply = readString(
+    process.env.OPENCLAW_PERMISSION_DENIED_REPLY,
+    readString(fileConfig["permissionDeniedReply"]),
+  );
+  if (permissionDeniedReply) {
+    config.permissionDeniedReply = permissionDeniedReply;
   }
 
   return config;

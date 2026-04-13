@@ -1,0 +1,13 @@
+{
+  "backendUrl": "http://127.0.0.1:8080",
+  "botKey": "ocbk_replace_with_your_bot_key",
+  "botId": "bot_test_001",
+  "mqttTcpUrl": "mqtt://127.0.0.1:1883",
+  "stateDir": "./data",
+  "historyCatchupLimit": 100,
+  "openClawAgentHandler": "./examples/openai-compatible-handler.cjs",
+  "permissionApprovalEnabled": true,
+  "permissionApprovalHandler": "./examples/permission-approver.cjs",
+  "permissionApprovalTimeoutMs": 8000,
+  "permissionDeniedReply": "当前会话暂无调用权限，请联系管理员审批。"
+}
