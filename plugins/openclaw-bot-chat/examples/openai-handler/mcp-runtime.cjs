@@ -331,10 +331,31 @@ function looksLikePath(keyPath, value) {
   if (!value || value.length > 4096) {
     return false;
   }
-  if (!/(^|\.)(path|file|filepath|target|destination|cwd|root)$/i.test(keyPath)) {
+  if (/^[a-z]+:\/\//i.test(value)) {
     return false;
   }
-  return value.includes("/") || value.includes("\\") || value.startsWith(".");
+
+  if (looksLikePathKey(keyPath)) {
+    return value.includes("/") || value.includes("\\") || value.startsWith(".") || value.startsWith("~");
+  }
+
+  return looksLikeFilesystemPath(value);
+}
+
+function looksLikePathKey(keyPath) {
+  return /(^|\.)(path|paths|file|files|filepath|filename|target|destination|cwd|root|dir|directory|output|input)$/i.test(keyPath);
+}
+
+function looksLikeFilesystemPath(value) {
+  return (
+    value.startsWith(".") ||
+    value.startsWith("~") ||
+    value.startsWith("/") ||
+    value.startsWith("\\") ||
+    /^[a-z]:[\\/]/i.test(value) ||
+    value.includes("/") ||
+    value.includes("\\")
+  );
 }
 
 function isWithinRoot(targetPath, rootPath) {
