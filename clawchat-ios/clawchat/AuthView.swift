@@ -2,6 +2,7 @@ import SwiftUI
 import Combine
 
 class AuthViewModel: ObservableObject {
+    @Published var identifier = ""
     @Published var username = ""
     @Published var email = ""
     @Published var password = ""
@@ -14,13 +15,10 @@ class AuthViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
 
-        let body: [String: String] = {
-            if email.contains("@") {
-                return ["email": email, "password": password]
-            } else {
-                return ["username": username, "password": password]
-            }
-        }()
+        let trimmedIdentifier = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body: [String: String] = trimmedIdentifier.contains("@")
+            ? ["email": trimmedIdentifier, "password": password]
+            : ["username": trimmedIdentifier, "password": password]
 
         let data = try? JSONEncoder().encode(body)
 
@@ -33,6 +31,7 @@ class AuthViewModel: ObservableObject {
                 }
             } receiveValue: { (payload: AuthPayload) in
                 AuthManager.shared.login(payload: payload)
+                RealtimeService.shared.start()
             }
             .store(in: &cancellables)
     }
@@ -53,6 +52,7 @@ class AuthViewModel: ObservableObject {
                 }
             } receiveValue: { (payload: AuthPayload) in
                 AuthManager.shared.login(payload: payload)
+                RealtimeService.shared.start()
             }
             .store(in: &cancellables)
     }
@@ -70,7 +70,7 @@ struct LoginView: View {
                     .fontWeight(.bold)
                     .padding(.bottom, 40)
 
-                TextField("Username or Email", text: $viewModel.username)
+                TextField("Username or Email", text: $viewModel.identifier)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
                     .autocapitalization(.none)
 

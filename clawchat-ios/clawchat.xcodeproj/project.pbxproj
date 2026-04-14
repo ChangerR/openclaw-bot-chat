@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		E1A4A5F230C1AA1100A1B2C3 /* CocoaMQTT in Frameworks */ = {isa = PBXBuildFile; productRef = E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		E196D9B92F8BEE35001C6033 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E1A4A5F230C1AA1100A1B2C3 /* CocoaMQTT in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = clawchat;
 			packageProductDependencies = (
+				E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */,
 			);
 			productName = clawchat;
 			productReference = E196D9AB2F8BEE32001C6033 /* clawchat.app */;
@@ -199,6 +205,9 @@
 			productRefGroup = E196D9AC2F8BEE32001C6033 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
+			packageReferences = (
+				E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */,
+			);
 			targets = (
 				E196D9AA2F8BEE31001C6033 /* clawchat */,
 				E196D9B72F8BEE35001C6033 /* clawchatTests */,
@@ -267,6 +276,25 @@
 			targetProxy = E196D9C32F8BEE35001C6033 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/emqx/CocoaMQTT.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.1.6;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */;
+			productName = CocoaMQTT;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		E196D9CA2F8BEE35001C6033 /* Debug */ = {

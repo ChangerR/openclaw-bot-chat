@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CocoaMQTT
 
 enum RealtimeConnectionState {
     case idle, connecting, connected, disconnected
@@ -7,23 +8,24 @@ enum RealtimeConnectionState {
 
 class RealtimeService: NSObject, ObservableObject {
     static let shared = RealtimeService()
-    
+
     @Published var connectionState: RealtimeConnectionState = .idle
     @Published var lastMessagesByConversation: [String: Message] = [:]
-    
-    private var webSocket: URLSessionWebSocketTask?
+
+    let messagePublisher = PassthroughSubject<Message, Never>()
+
     private var bootstrap: RealtimeBootstrapResponse?
     private var cancellables = Set<AnyCancellable>()
-    
-    private let messageSubject = PassthroughSubject<RealtimeMessagePayload, Never>()
-    
+    private var mqttClient: CocoaMQTT5?
+
     override init() {
         super.init()
     }
 
     func start() {
         guard AuthManager.shared.isAuthenticated else { return }
-        
+        guard connectionState != .connected && connectionState != .connecting else { return }
+
         fetchBootstrap()
             .sink { completion in
                 if case .failure(let error) = completion {
@@ -31,272 +33,147 @@ class RealtimeService: NSObject, ObservableObject {
                 }
             } receiveValue: { [weak self] bootstrap in
                 self?.bootstrap = bootstrap
-                self?.connect()
+                self?.connect(using: bootstrap)
             }
             .store(in: &cancellables)
     }
 
     func stop() {
-        webSocket?.cancel(with: .goingAway, reason: nil)
-        webSocket = nil
+        mqttClient?.disconnect()
+        mqttClient = nil
         connectionState = .idle
     }
 
     private func fetchBootstrap() -> AnyPublisher<RealtimeBootstrapResponse, Error> {
-        return APIClient.shared.request("/api/v1/realtime/bootstrap")
+        APIClient.shared.request("/api/v1/realtime/bootstrap")
     }
 
-    private func connect() {
-        guard let bootstrap = bootstrap else { return }
-        
-        let urlString = bootstrap.broker.wsPublicURL
-        guard let url = URL(string: urlString) else { return }
-        
+    private func connect(using bootstrap: RealtimeBootstrapResponse) {
+        guard let url = URL(string: bootstrap.broker.wsPublicURL), let host = url.host else {
+            connectionState = .disconnected
+            return
+        }
+
         connectionState = .connecting
-        
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: OperationQueue())
-        webSocket = session.webSocketTask(with: url, protocols: ["mqtt"])
-        webSocket?.resume()
-        
-        listen()
-        sendConnectFrame()
-    }
 
-    private func listen() {
-        webSocket?.receive { [weak self] result in
-            switch result {
-            case .success(let message):
-                switch message {
-                case .data(let data):
-                    self?.handleMqttData(data)
-                case .string(let string):
-                    print("Received string frame, but MQTT expects binary: \(string)")
-                @unknown default:
-                    break
-                }
-                self?.listen()
-            case .failure(let error):
-                print("WebSocket error: \(error)")
-                self?.connectionState = .disconnected
-            }
-        }
-    }
+        let mqtt = CocoaMQTT5(clientID: bootstrap.clientId, host: host, port: UInt16(url.port ?? 80))
+        mqtt.enableSSL = url.scheme == "wss"
+        mqtt.username = bootstrap.broker.username
+        mqtt.password = bootstrap.broker.password
+        mqtt.keepAlive = 60
+        mqtt.autoReconnect = true
+        mqtt.allowUntrustCACertificate = true
+        mqtt.delegate = self
 
-    // MARK: - MQTT Minimal Implementation
-    
-    private func sendConnectFrame() {
-        guard let bootstrap = bootstrap else { return }
-        
-        // MQTT 3.1.1 CONNECT packet (Simplified)
-        var packet = Data()
-        packet.append(0x10) // Fixed Header (CONNECT)
-        
-        var variableHeader = Data()
-        variableHeader.append(contentsOf: [0x00, 0x04]) // Protocol Name Length (4)
-        variableHeader.append(contentsOf: "MQTT".data(using: .utf8)!)
-        variableHeader.append(0x04) // Protocol Level (4 = 3.1.1)
-        
-        var connectFlags: UInt8 = 0x02 // Clean Session
-        if bootstrap.broker.username != nil { connectFlags |= 0x80 }
-        if bootstrap.broker.password != nil { connectFlags |= 0x40 }
-        variableHeader.append(connectFlags)
-        
-        variableHeader.append(contentsOf: [0x00, 0x3C]) // Keep Alive (60s)
-        
-        var payload = Data()
-        let clientIdData = bootstrap.clientId.data(using: .utf8)!
-        payload.append(contentsOf: UInt16(clientIdData.count).bigEndianBytes)
-        payload.append(clientIdData)
-        
-        if let username = bootstrap.broker.username, let usernameData = username.data(using: .utf8) {
-            payload.append(contentsOf: UInt16(usernameData.count).bigEndianBytes)
-            payload.append(usernameData)
-        }
-        
-        if let password = bootstrap.broker.password, let passwordData = password.data(using: .utf8) {
-            payload.append(contentsOf: UInt16(passwordData.count).bigEndianBytes)
-            payload.append(passwordData)
-        }
-        
-        let remainingLength = variableHeader.count + payload.count
-        packet.append(contentsOf: encodeRemainingLength(remainingLength))
-        packet.append(variableHeader)
-        packet.append(payload)
-        
-        webSocket?.send(.data(packet)) { error in
-            if let error = error {
-                print("Failed to send CONNECT: \(error)")
-            }
-        }
-    }
+        let websocket = CocoaMQTTWebSocket(uri: bootstrap.broker.wsPublicURL)
+        websocket.enableSSL = url.scheme == "wss"
+        mqtt.socket = websocket
 
-    private func subscribeToTopics() {
-        guard let bootstrap = bootstrap else { return }
-        
-        for sub in bootstrap.subscriptions {
-            sendSubscribeFrame(topic: sub.topic, qos: sub.qos)
-        }
-    }
-
-    private func sendSubscribeFrame(topic: String, qos: Int) {
-        var packet = Data()
-        packet.append(0x82) // Fixed Header (SUBSCRIBE, QoS 1)
-        
-        var payload = Data()
-        payload.append(contentsOf: [0x00, 0x01]) // Packet Identifier (1)
-        
-        let topicData = topic.data(using: .utf8)!
-        payload.append(contentsOf: UInt16(topicData.count).bigEndianBytes)
-        payload.append(topicData)
-        payload.append(UInt8(qos))
-        
-        packet.append(contentsOf: encodeRemainingLength(payload.count))
-        packet.append(payload)
-        
-        webSocket?.send(.data(packet)) { error in
-            if let error = error {
-                print("Failed to subscribe to \(topic): \(error)")
-            }
-        }
+        mqttClient = mqtt
+        mqtt.connect()
     }
 
     func sendMessage(conversationId: String, text: String, topic: String) {
-        guard let user = AuthManager.shared.currentUser, let bootstrap = bootstrap else { return }
-        
-        let messageId = UUID().uuidString
-        let timestamp = Int64(Date().timeIntervalSince1970)
-        
+        guard let mqttClient, let user = AuthManager.shared.currentUser else { return }
+
+        let route = MessageRoute(topic: topic)
+        guard let target = route.targetForSender(type: "user", id: user.id.uuidString) else {
+            print("Cannot resolve message target for topic: \(topic)")
+            return
+        }
+
         let payload = RealtimeMessagePayload(
-            id: messageId,
+            id: UUID().uuidString,
             topic: topic,
             conversationId: conversationId,
-            timestamp: timestamp,
+            timestamp: Int64(Date().timeIntervalSince1970),
             from: MessagePeerPayload(type: "user", id: user.id.uuidString, name: user.username),
-            to: MessagePeerPayload(type: "bot", id: "bot_id_placeholder"), // Needs proper mapping
+            to: MessagePeerPayload(type: target.type, id: target.id, name: nil),
             content: RealtimeContentPayload(type: "text", body: text),
             seq: nil
         )
-        
-        publish(topic: topic, payload: payload)
-    }
 
-    private func publish(topic: String, payload: RealtimeMessagePayload) {
         guard let jsonData = try? JSONEncoder().encode(payload) else { return }
-        
-        var packet = Data()
-        packet.append(0x30) // Fixed Header (PUBLISH, QoS 0)
-        
-        var variableHeader = Data()
-        let topicData = topic.data(using: .utf8)!
-        variableHeader.append(contentsOf: UInt16(topicData.count).bigEndianBytes)
-        variableHeader.append(topicData)
-        
-        let remainingLength = variableHeader.count + jsonData.count
-        packet.append(contentsOf: encodeRemainingLength(remainingLength))
-        packet.append(variableHeader)
-        packet.append(jsonData)
-        
-        webSocket?.send(.data(packet)) { error in
-            if let error = error {
-                print("Failed to publish to \(topic): \(error)")
-            }
+        mqttClient.publish(topic, withString: String(decoding: jsonData, as: UTF8.self), qos: .qos1)
+    }
+
+    private func handleRealtimePayload(_ payload: RealtimeMessagePayload) {
+        let message = Message(from: payload)
+        DispatchQueue.main.async {
+            self.messagePublisher.send(message)
+            self.lastMessagesByConversation[message.conversationId] = message
         }
-    }
-
-    private func handleMqttData(_ data: Data) {
-        guard data.count > 0 else { return }
-        let firstByte = data[0]
-        let packetType = (firstByte & 0xF0) >> 4
-        
-        switch packetType {
-        case 2: // CONNACK
-            print("MQTT Connected (CONNACK)")
-            DispatchQueue.main.async {
-                self.connectionState = .connected
-                self.subscribeToTopics()
-            }
-        case 3: // PUBLISH
-            handleIncomingPublish(data)
-        default:
-            break
-        }
-    }
-
-    private func handleIncomingPublish(_ data: Data) {
-        // Very basic PUBLISH parsing
-        var offset = 1
-        let (remainingLength, lengthSize) = decodeRemainingLength(data, offset: offset)
-        offset += lengthSize
-        
-        let topicLength = Int(UInt16(bigEndianData: data.subdata(in: offset..<(offset+2))))
-        offset += 2
-        // let topic = String(data: data.subdata(in: offset..<(offset+topicLength)), encoding: .utf8)
-        offset += topicLength
-        
-        let payloadData = data.subdata(in: offset..<(offset + Int(remainingLength) - 2 - topicLength))
-        
-        if let payload = try? JSONDecoder().decode(RealtimeMessagePayload.self, from: payloadData) {
-            print("Received MQTT message: \(payload.id)")
-            let message = Message(from: payload)
-            DispatchQueue.main.async {
-                self.messagePublisher.send(message)
-                self.lastMessagesByConversation[message.conversationId] = message
-            }
-        }
-    }
-
-    private func encodeRemainingLength(_ length: Int) -> [UInt8] {
-        var bytes = [UInt8]()
-        var val = length
-        repeat {
-            var digit = UInt8(val % 128)
-            val /= 128
-            if val > 0 {
-                digit |= 0x80
-            }
-            bytes.append(digit)
-        } while val > 0
-        return bytes
-    }
-
-    private func decodeRemainingLength(_ data: Data, offset: Int) -> (UInt32, Int) {
-        var multiplier: UInt32 = 1
-        var value: UInt32 = 0
-        var currentOffset = offset
-        var digit: UInt8 = 0
-        repeat {
-            digit = data[currentOffset]
-            value += UInt32(digit & 127) * multiplier
-            multiplier *= 128
-            currentOffset += 1
-        } while (digit & 128) != 0
-        return (value, currentOffset - offset)
     }
 }
 
-extension RealtimeService: URLSessionWebSocketDelegate {
-    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        print("WebSocket connected")
+extension RealtimeService: CocoaMQTT5Delegate {
+    func mqtt5(_ mqtt5: CocoaMQTT5, didConnectAck ack: CocoaMQTTCONNACKReasonCode, connAckData: MqttConnectAck) {
+        DispatchQueue.main.async {
+            self.connectionState = .connected
+        }
+
+        guard let bootstrap else { return }
+        for sub in bootstrap.subscriptions {
+            mqtt5.subscribe(sub.topic, qos: CocoaMQTTQoS(rawValue: UInt8(sub.qos)) ?? .qos1)
+        }
     }
-    
-    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWithCode closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        print("WebSocket closed")
+
+    func mqtt5(_ mqtt5: CocoaMQTT5, didStateChangeTo state: CocoaMQTTConnState) {
+        if state == .disconnected {
+            DispatchQueue.main.async {
+                self.connectionState = .disconnected
+            }
+        }
+    }
+
+    func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveMessage message: CocoaMQTT5Message, id: UInt16, publishData: MqttPublishPacket) {
+        guard let stringPayload = message.string,
+              let payloadData = stringPayload.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(RealtimeMessagePayload.self, from: payloadData)
+        else { return }
+
+        handleRealtimePayload(payload)
+    }
+
+    func mqtt5(_ mqtt5: CocoaMQTT5, didSubscribeTopics success: NSDictionary, failed: [String]) {}
+    func mqtt5(_ mqtt5: CocoaMQTT5, didUnsubscribeTopics topics: [String], failed: [String]) {}
+    func mqtt5DidPing(_ mqtt5: CocoaMQTT5) {}
+    func mqtt5DidReceivePong(_ mqtt5: CocoaMQTT5) {}
+    func mqtt5DidDisconnect(_ mqtt5: CocoaMQTT5, withError err: Error?) {
         DispatchQueue.main.async {
             self.connectionState = .disconnected
         }
     }
+    func mqtt5(_ mqtt5: CocoaMQTT5, didPublishMessage message: CocoaMQTT5Message, id: UInt16) {}
+    func mqtt5(_ mqtt5: CocoaMQTT5, didPublishAck id: UInt16) {}
+    func mqtt5(_ mqtt5: CocoaMQTT5, didReceive authChallenge: MqttAuth) {}
 }
 
-// Helper extensions
-extension UInt16 {
-    var bigEndianBytes: [UInt8] {
-        return [UInt8((self & 0xFF00) >> 8), UInt8(self & 0x00FF)]
+private struct MessageRoute {
+    struct Peer {
+        let type: String
+        let id: String
     }
-    
-    init(bigEndianData data: Data) {
-        self = data.withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
+
+    let parts: [String]
+
+    init(topic: String) {
+        self.parts = topic.split(separator: "/").map(String.init)
     }
-}
-}
+
+    func targetForSender(type: String, id: String) -> Peer? {
+        if parts.count == 3, parts[0] == "chat", parts[1] == "group" {
+            return Peer(type: "group", id: parts[2])
+        }
+
+        if parts.count == 6, parts[0] == "chat", parts[1] == "dm" {
+            let left = Peer(type: parts[2], id: parts[3])
+            let right = Peer(type: parts[4], id: parts[5])
+
+            if left.type == type && left.id == id { return right }
+            if right.type == type && right.id == id { return left }
+        }
+
+        return nil
     }
 }
