@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		E1A4A5F230C1AA1100A1B2C3 /* CocoaMQTT in Frameworks */ = {isa = PBXBuildFile; productRef = E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */; };
+		E1A4A5F430C1AA1100A1B2C4 /* CocoaMQTTWebSocket in Frameworks */ = {isa = PBXBuildFile; productRef = E1A4A5F330C1AA1100A1B2C4 /* CocoaMQTTWebSocket */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E1A4A5F230C1AA1100A1B2C3 /* CocoaMQTT in Frameworks */,
+				E1A4A5F430C1AA1100A1B2C4 /* CocoaMQTTWebSocket in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,6 +120,7 @@
 			name = clawchat;
 			packageProductDependencies = (
 				E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */,
+				E1A4A5F330C1AA1100A1B2C4 /* CocoaMQTTWebSocket */,
 			);
 			productName = clawchat;
 			productReference = E196D9AB2F8BEE32001C6033 /* clawchat.app */;
@@ -293,6 +296,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */;
 			productName = CocoaMQTT;
+		};
+		E1A4A5F330C1AA1100A1B2C4 /* CocoaMQTTWebSocket */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */;
+			productName = CocoaMQTTWebSocket;
 		};
 /* End XCSwiftPackageProductDependency section */
 

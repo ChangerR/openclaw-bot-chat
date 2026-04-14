@@ -166,10 +166,10 @@ struct GroupRowCard: View {
                 Circle()
                     .fill(Color.white.opacity(0.9))
                     .frame(width: 52, height: 52)
-                    .overlay(Image(systemName: "person.3.fill").foregroundStyle(.rcmsAccent))
+                    .overlay(Image(systemName: "person.3.fill").foregroundStyle(Color.rcmsAccent))
 
                 Circle()
-                    .fill((group.isActive == true) ? .rcmsOnline : .rcmsOffline)
+                    .fill((group.isActive == true) ? Color.rcmsOnline : Color.rcmsOffline)
                     .frame(width: 11, height: 11)
             }
 
