@@ -63,6 +63,14 @@ struct GroupsView: View {
         }
     }
 
+    private func conversationTopic(for group: ChatGroup) -> String {
+        if let mqttTopic = group.mqttTopic, !mqttTopic.isEmpty {
+            return mqttTopic
+        }
+
+        return "chat/group/\(group.id.uuidString)"
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -79,17 +87,12 @@ struct GroupsView: View {
                         }
 
                         ForEach(filteredGroups) { group in
-                            if let topic = group.mqttTopic {
-                                NavigationLink {
-                                    ChatRoomView(context: .init(id: topic, title: group.name, subtitle: (group.isActive == true) ? "在线" : "离线", isGroup: true, groupId: group.id.uuidString))
-                                } label: {
-                                    GroupRowCard(group: group)
-                                }
-                                .buttonStyle(.plain)
-                            } else {
+                            NavigationLink {
+                                ChatRoomView(context: .init(id: conversationTopic(for: group), title: group.name, subtitle: (group.isActive == true) ? "在线" : "离线", isGroup: true, groupId: group.id.uuidString))
+                            } label: {
                                 GroupRowCard(group: group)
-                                    .opacity(0.6)
                             }
+                            .buttonStyle(.plain)
                         }
                     }
                     .padding(.horizontal, 16)

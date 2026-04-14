@@ -63,6 +63,18 @@ struct BotsView: View {
         }
     }
 
+    private func conversationTopic(for bot: Bot) -> String? {
+        if let mqttTopic = bot.mqttTopic, !mqttTopic.isEmpty {
+            return mqttTopic
+        }
+
+        guard let userID = AuthManager.shared.currentUser?.id.uuidString else {
+            return nil
+        }
+
+        return "chat/dm/user/\(userID)/bot/\(bot.id.uuidString)"
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -79,7 +91,7 @@ struct BotsView: View {
                         }
 
                         ForEach(filteredBots) { bot in
-                            if let topic = bot.mqttTopic {
+                            if let topic = conversationTopic(for: bot) {
                                 NavigationLink {
                                     ChatRoomView(context: .init(id: topic, title: bot.name, subtitle: bot.status == "online" ? "在线" : "离线", isGroup: false, groupId: nil))
                                 } label: {
