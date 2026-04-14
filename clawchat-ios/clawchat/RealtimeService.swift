@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CocoaMQTT
+import CocoaMQTTWebSocket
 
 enum RealtimeConnectionState {
     case idle, connecting, connected, disconnected
@@ -56,8 +57,10 @@ class RealtimeService: NSObject, ObservableObject {
 
         connectionState = .connecting
 
-        let mqtt = CocoaMQTT5(clientID: bootstrap.clientId, host: host, port: UInt16(url.port ?? 80))
-        mqtt.enableSSL = url.scheme == "wss"
+        let websocket = CocoaMQTTWebSocket(uri: url.path.isEmpty ? "/mqtt" : url.path)
+        websocket.enableSSL = url.scheme == "wss"
+
+        let mqtt = CocoaMQTT5(clientID: bootstrap.clientId, host: host, port: UInt16(url.port ?? 80), socket: websocket)
         mqtt.username = bootstrap.broker.username
         mqtt.password = bootstrap.broker.password
         mqtt.keepAlive = 60
@@ -65,12 +68,8 @@ class RealtimeService: NSObject, ObservableObject {
         mqtt.allowUntrustCACertificate = true
         mqtt.delegate = self
 
-        let websocket = CocoaMQTTWebSocket(uri: bootstrap.broker.wsPublicURL)
-        websocket.enableSSL = url.scheme == "wss"
-        mqtt.socket = websocket
-
         mqttClient = mqtt
-        mqtt.connect()
+        _ = mqtt.connect()
     }
 
     func sendMessage(conversationId: String, text: String, topic: String) {
@@ -94,7 +93,7 @@ class RealtimeService: NSObject, ObservableObject {
         )
 
         guard let jsonData = try? JSONEncoder().encode(payload) else { return }
-        mqttClient.publish(topic, withString: String(decoding: jsonData, as: UTF8.self), qos: .qos1)
+        mqttClient.publish(topic, withString: String(decoding: jsonData, as: UTF8.self), qos: .qos1, properties: MqttPublishProperties())
     }
 
     private func handleRealtimePayload(_ payload: RealtimeMessagePayload) {
@@ -107,7 +106,7 @@ class RealtimeService: NSObject, ObservableObject {
 }
 
 extension RealtimeService: CocoaMQTT5Delegate {
-    func mqtt5(_ mqtt5: CocoaMQTT5, didConnectAck ack: CocoaMQTTCONNACKReasonCode, connAckData: MqttConnectAck) {
+    func mqtt5(_ mqtt5: CocoaMQTT5, didConnectAck ack: CocoaMQTTCONNACKReasonCode, connAckData: MqttDecodeConnAck?) {
         DispatchQueue.main.async {
             self.connectionState = .connected
         }
@@ -126,7 +125,7 @@ extension RealtimeService: CocoaMQTT5Delegate {
         }
     }
 
-    func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveMessage message: CocoaMQTT5Message, id: UInt16, publishData: MqttPublishPacket) {
+    func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveMessage message: CocoaMQTT5Message, id: UInt16, publishData: MqttDecodePublish?) {
         guard let stringPayload = message.string,
               let payloadData = stringPayload.data(using: .utf8),
               let payload = try? JSONDecoder().decode(RealtimeMessagePayload.self, from: payloadData)
@@ -135,8 +134,8 @@ extension RealtimeService: CocoaMQTT5Delegate {
         handleRealtimePayload(payload)
     }
 
-    func mqtt5(_ mqtt5: CocoaMQTT5, didSubscribeTopics success: NSDictionary, failed: [String]) {}
-    func mqtt5(_ mqtt5: CocoaMQTT5, didUnsubscribeTopics topics: [String], failed: [String]) {}
+    func mqtt5(_ mqtt5: CocoaMQTT5, didSubscribeTopics success: NSDictionary, failed: [String], subAckData: MqttDecodeSubAck?) {}
+    func mqtt5(_ mqtt5: CocoaMQTT5, didUnsubscribeTopics topics: [String], unsubAckData: MqttDecodeUnsubAck?) {}
     func mqtt5DidPing(_ mqtt5: CocoaMQTT5) {}
     func mqtt5DidReceivePong(_ mqtt5: CocoaMQTT5) {}
     func mqtt5DidDisconnect(_ mqtt5: CocoaMQTT5, withError err: Error?) {
@@ -145,8 +144,10 @@ extension RealtimeService: CocoaMQTT5Delegate {
         }
     }
     func mqtt5(_ mqtt5: CocoaMQTT5, didPublishMessage message: CocoaMQTT5Message, id: UInt16) {}
-    func mqtt5(_ mqtt5: CocoaMQTT5, didPublishAck id: UInt16) {}
-    func mqtt5(_ mqtt5: CocoaMQTT5, didReceive authChallenge: MqttAuth) {}
+    func mqtt5(_ mqtt5: CocoaMQTT5, didPublishAck id: UInt16, pubAckData: MqttDecodePubAck?) {}
+    func mqtt5(_ mqtt5: CocoaMQTT5, didPublishRec id: UInt16, pubRecData: MqttDecodePubRec?) {}
+    func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveDisconnectReasonCode reasonCode: CocoaMQTTDISCONNECTReasonCode) {}
+    func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveAuthReasonCode reasonCode: CocoaMQTTAUTHReasonCode) {}
 }
 
 private struct MessageRoute {

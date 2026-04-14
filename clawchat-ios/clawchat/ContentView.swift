@@ -38,7 +38,7 @@ struct HomeView: View {
                         Label("设置", systemImage: "gearshape.fill")
                     }
             }
-            .tint(.rcmsAccent)
+            .tint(Color.rcmsAccent)
         }
     }
 }

@@ -343,7 +343,7 @@ struct GroupMaintenanceSheet: View {
                                 Button("移除") {
                                     viewModel.removeMember(groupId: groupId, memberId: member.userId)
                                 }
-                                .foregroundStyle(.rcmsDanger)
+                                .foregroundStyle(Color.rcmsDanger)
                             }
                         }
 
@@ -376,7 +376,7 @@ struct GroupMaintenanceSheet: View {
                                 Button("添加") {
                                     viewModel.addBot(groupId: groupId, botId: bot.id)
                                 }
-                                .foregroundStyle(.rcmsAccent)
+                                .foregroundStyle(Color.rcmsAccent)
                             }
                         }
                     }

@@ -175,10 +175,10 @@ struct BotRowCard: View {
                 Circle()
                     .fill(Color.white.opacity(0.9))
                     .frame(width: 52, height: 52)
-                    .overlay(Image(systemName: "cpu.fill").foregroundStyle(.rcmsAccent))
+                    .overlay(Image(systemName: "cpu.fill").foregroundStyle(Color.rcmsAccent))
 
                 Circle()
-                    .fill((bot.status == "online") ? .rcmsOnline : .rcmsOffline)
+                    .fill((bot.status == "online") ? Color.rcmsOnline : Color.rcmsOffline)
                     .frame(width: 11, height: 11)
             }
 
