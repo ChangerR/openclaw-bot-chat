@@ -50,55 +50,141 @@ struct GroupsView: View {
     @State private var showingCreate = false
     @State private var newName = ""
     @State private var newDescription = ""
+    @State private var searchText = ""
+
+    private var filteredGroups: [ChatGroup] {
+        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return viewModel.groups
+        }
+
+        return viewModel.groups.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText)
+            || ($0.description?.localizedCaseInsensitiveContains(searchText) ?? false)
+        }
+    }
 
     var body: some View {
-        NavigationView {
-            List(viewModel.groups) { group in
-                VStack(alignment: .leading) {
-                    Text(group.name)
-                        .font(.headline)
-                    if let desc = group.description {
-                        Text(desc)
-                            .font(.subheadline)
-                            .foregroundColor(.gray)
-                    }
-                }
-            }
-            .navigationTitle("Groups")
-            .onAppear {
-                viewModel.fetchGroups()
-            }
-            .toolbar {
-                Button(action: { showingCreate = true }) {
-                    Image(systemName: "plus")
-                }
-            }
-            .sheet(isPresented: $showingCreate) {
-                NavigationView {
-                    Form {
-                        TextField("Group name", text: $newName)
-                        TextField("Description", text: $newDescription)
-                    }
-                    .navigationTitle("Create Group")
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") {
-                                showingCreate = false
-                            }
+        NavigationStack {
+            ZStack {
+                FrostedBackground()
+
+                ScrollView {
+                    VStack(spacing: 12) {
+                        searchBar
+                            .padding(.top, 8)
+
+                        if viewModel.isLoading {
+                            ProgressView()
+                                .padding(.top, 32)
                         }
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Create") {
-                                viewModel.createGroup(name: newName, description: newDescription) {
-                                    newName = ""
-                                    newDescription = ""
-                                    showingCreate = false
+
+                        ForEach(filteredGroups) { group in
+                            if let topic = group.mqttTopic {
+                                NavigationLink {
+                                    ChatRoomView(context: .init(id: topic, title: group.name, subtitle: (group.isActive == true) ? "在线" : "离线", isGroup: true, groupId: group.id.uuidString))
+                                } label: {
+                                    GroupRowCard(group: group)
                                 }
+                                .buttonStyle(.plain)
+                            } else {
+                                GroupRowCard(group: group)
+                                    .opacity(0.6)
                             }
-                            .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 24)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .navigationTitle("👥 群组")
+            .toolbar {
+                Button {
+                    showingCreate = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.headline)
+                }
+            }
+            .onAppear { viewModel.fetchGroups() }
+            .refreshable { viewModel.fetchGroups() }
+            .sheet(isPresented: $showingCreate) {
+                createGroupSheet
+            }
+        }
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+            TextField("搜索群组", text: $searchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+        }
+        .padding(12)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var createGroupSheet: some View {
+        NavigationStack {
+            Form {
+                TextField("Group name", text: $newName)
+                TextField("Description", text: $newDescription)
+            }
+            .navigationTitle("创建群组")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showingCreate = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        viewModel.createGroup(name: newName, description: newDescription) {
+                            newName = ""
+                            newDescription = ""
+                            showingCreate = false
+                        }
+                    }
+                    .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
+        .presentationDetents([.medium])
+    }
+}
+
+struct GroupRowCard: View {
+    let group: ChatGroup
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack(alignment: .bottomTrailing) {
+                Circle()
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: 52, height: 52)
+                    .overlay(Image(systemName: "person.3.fill").foregroundStyle(.rcmsAccent))
+
+                Circle()
+                    .fill((group.isActive == true) ? .rcmsOnline : .rcmsOffline)
+                    .frame(width: 11, height: 11)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(group.name)
+                    .font(.headline)
+                    .fontWeight(.semibold)
+
+                Text(group.description ?? "暂无消息")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+        }
+        .frame(height: 72)
+        .padding(.horizontal, 14)
+        .frostedCardStyle()
     }
 }

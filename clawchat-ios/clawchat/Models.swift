@@ -25,6 +25,7 @@ struct Bot: Codable, Identifiable {
     var avatarUrl: String?
     var botType: String?
     var status: String?
+    var mqttTopic: String?
     var createdAt: Date?
     var updatedAt: Date?
 
@@ -33,6 +34,7 @@ struct Bot: Codable, Identifiable {
         case ownerId = "owner_id"
         case avatarUrl = "avatar_url"
         case botType = "bot_type"
+        case mqttTopic = "mqtt_topic"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -47,6 +49,7 @@ struct ChatGroup: Codable, Identifiable {
     var ownerId: UUID
     var memberCount: Int?
     var isActive: Bool?
+    var mqttTopic: String?
     var createdAt: Date?
     var updatedAt: Date?
 
@@ -55,8 +58,46 @@ struct ChatGroup: Codable, Identifiable {
         case ownerId = "owner_id"
         case memberCount = "member_count"
         case isActive = "is_active"
+        case mqttTopic = "mqtt_topic"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+}
+
+// MARK: - Group Member Models
+
+struct GroupMembersPayload: Codable {
+    let users: [GroupUserMember]
+    let bots: [GroupBotMember]
+}
+
+struct GroupUserMember: Codable, Identifiable {
+    let id: UUID
+    let groupId: UUID
+    let userId: UUID
+    let role: String
+    let nickname: String?
+    let user: User?
+
+    enum CodingKeys: String, CodingKey {
+        case id, role, nickname, user
+        case groupId = "group_id"
+        case userId = "user_id"
+    }
+}
+
+struct GroupBotMember: Codable, Identifiable {
+    let id: UUID
+    let groupId: UUID
+    let botId: UUID
+    let role: String
+    let nickname: String?
+    let bot: Bot?
+
+    enum CodingKeys: String, CodingKey {
+        case id, role, nickname, bot
+        case groupId = "group_id"
+        case botId = "bot_id"
     }
 }
 
@@ -205,7 +246,6 @@ struct RealtimeMessagePayload: Codable {
     }
 }
 
-// Simple AnyCodable to handle dynamic metadata
 struct AnyCodable: Codable {
     let value: Any
 

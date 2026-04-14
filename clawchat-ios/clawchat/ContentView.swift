@@ -19,26 +19,26 @@ struct ContentView: View {
 
 struct HomeView: View {
     var body: some View {
-        TabView {
-            ConversationsView()
-                .tabItem {
-                    Label("Chats", systemImage: "bubble.left.and.bubble.right")
-                }
+        ZStack {
+            FrostedBackground()
 
-            BotsView()
-                .tabItem {
-                    Label("Bots", systemImage: "cpu")
-                }
+            TabView {
+                BotsView()
+                    .tabItem {
+                        Label("单聊", systemImage: "message")
+                    }
 
-            GroupsView()
-                .tabItem {
-                    Label("Groups", systemImage: "person.3")
-                }
+                GroupsView()
+                    .tabItem {
+                        Label("群组", systemImage: "person.3.fill")
+                    }
 
-            SettingsView()
-                .tabItem {
-                    Label("Settings", systemImage: "gear")
-                }
+                SettingsView()
+                    .tabItem {
+                        Label("设置", systemImage: "gearshape.fill")
+                    }
+            }
+            .tint(.rcmsAccent)
         }
     }
 }
