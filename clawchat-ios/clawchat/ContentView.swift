@@ -7,6 +7,9 @@ struct ContentView: View {
         Group {
             if authManager.isAuthenticated {
                 HomeView()
+                    .onAppear {
+                        RealtimeService.shared.start()
+                    }
             } else {
                 LoginView()
             }
@@ -21,17 +24,17 @@ struct HomeView: View {
                 .tabItem {
                     Label("Chats", systemImage: "bubble.left.and.bubble.right")
                 }
-            
+
             BotsView()
                 .tabItem {
                     Label("Bots", systemImage: "cpu")
                 }
-            
+
             GroupsView()
                 .tabItem {
                     Label("Groups", systemImage: "person.3")
                 }
-            
+
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")

@@ -19,11 +19,38 @@ class APIClient {
         case unauthorized
     }
 
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+
+            if let seconds = try? container.decode(Double.self) {
+                return Date(timeIntervalSince1970: seconds)
+            }
+
+            let raw = try container.decode(String.self)
+            let iso8601 = ISO8601DateFormatter()
+            iso8601.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = iso8601.date(from: raw) {
+                return date
+            }
+
+            let fallbackISO = ISO8601DateFormatter()
+            fallbackISO.formatOptions = [.withInternetDateTime]
+            if let date = fallbackISO.date(from: raw) {
+                return date
+            }
+
+            throw APIError.decodingError
+        }
+        return decoder
+    }()
+
     func request<T: Codable>(_ endpoint: String,
                             method: String = "GET",
                             body: Data? = nil,
                             requiresAuth: Bool = true) -> AnyPublisher<T, Error> {
-        
+
         guard let url = URL(string: endpoint, relativeTo: baseURL) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
@@ -55,13 +82,12 @@ class APIClient {
 
                 return data
             }
-            .decode(type: ApiResponse<T>.self, decoder: JSONDecoder())
+            .decode(type: ApiResponse<T>.self, decoder: Self.decoder)
             .tryMap { apiResponse -> T in
                 if apiResponse.code != 0 {
                     throw APIError.serverError(apiResponse.message)
                 }
                 guard let data = apiResponse.data else {
-                    // Some requests might return empty data but success code
                     if T.self == EmptyResponse.self {
                         return EmptyResponse() as! T
                     }
@@ -105,5 +131,6 @@ class AuthManager: ObservableObject {
         userDefaults.removeObject(forKey: refreshTokenKey)
         self.currentUser = nil
         self.isAuthenticated = false
+        RealtimeService.shared.stop()
     }
 }
