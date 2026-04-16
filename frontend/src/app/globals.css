@@ -37,11 +37,11 @@ body.bg-theme-dark .border-slate-200 { border-color: #334155; }
 body.bg-theme-dark .bg-slate-50 { background-color: #334155; }
 
 /* Font Themes */
-body.font-theme-sans { --theme-font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-family: var(--theme-font-family); }
-body.font-theme-serif { --theme-font-family: ui-serif, Georgia, "PingFang SC", "Microsoft YaHei", serif; font-family: var(--theme-font-family); }
-body.font-theme-mono { --theme-font-family: ui-monospace, "SF Mono", "Cascadia Code", "Menlo", Consolas, monospace; font-family: var(--theme-font-family); }
-body.font-theme-roboto { --theme-font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-family: var(--theme-font-family); }
-body.font-theme-open-sans { --theme-font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-family: var(--theme-font-family); }
+body.font-theme-sans { --theme-font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif; font-family: var(--theme-font-family); }
+body.font-theme-serif { --theme-font-family: var(--font-playfair), ui-serif, Georgia, serif; font-family: var(--theme-font-family); }
+body.font-theme-mono { --theme-font-family: var(--font-fira-code), ui-monospace, SFMono-Regular, monospace; font-family: var(--theme-font-family); }
+body.font-theme-roboto { --theme-font-family: var(--font-roboto), sans-serif; font-family: var(--theme-font-family); }
+body.font-theme-open-sans { --theme-font-family: var(--font-open-sans), sans-serif; font-family: var(--theme-font-family); }
 
 /* Ensure fonts cascade properly into tailwind prose and form elements */
 textarea, input, button, select, .prose {
