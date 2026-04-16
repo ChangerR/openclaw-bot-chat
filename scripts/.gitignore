@@ -1,3 +1,6 @@
 test-claw.env
 dev.env
 test-agent.env
+.managed-agents/
+agents/*.env
+!agents/.gitkeep

@@ -123,27 +123,6 @@ services:
       - TZ=Asia/Shanghai
       - NODE_ENV=production
 
-  testagent:
-    image: node:22
-    profiles: ["testagent"]
-    working_dir: /workspace
-    depends_on:
-      backend:
-        condition: service_healthy
-      emqx:
-        condition: service_healthy
-    volumes:
-      - ./:/workspace
-    environment:
-      - BOT_CHAT_BACKEND_URL=${BOT_CHAT_BACKEND_URL:-http://backend:8080}
-      - BOT_CHAT_BOT_KEY=${BOT_CHAT_BOT_KEY:-}
-      - BOT_CHAT_BOT_ID=${BOT_CHAT_BOT_ID:-}
-      - BOT_CHAT_MQTT_TCP_URL=${BOT_CHAT_MQTT_TCP_URL:-mqtt://emqx:1883}
-      - OPENAI_COMPAT_BASE_URL=${OPENAI_COMPAT_BASE_URL:-}
-      - OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
-      - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-}
-    command: ["bash", "-lc", "./scripts/test-agent.sh start"]
-
 volumes:
   postgres_data:
   redis_data:

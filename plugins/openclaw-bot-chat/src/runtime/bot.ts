@@ -42,6 +42,12 @@ import { SessionManager } from "./session";
 const RECENT_MESSAGE_CACHE_SIZE = 2_000;
 const DEFAULT_HISTORY_LIMIT = 200;
 
+type PermissionApprovalResult = {
+  allowed: boolean;
+  reason?: string;
+  notifyMessage?: string;
+};
+
 export class OpenClawBotRuntime {
   private readonly runtimes: ManagedBotRuntime[];
 
@@ -701,14 +707,16 @@ class ManagedBotRuntime {
   private async resolvePermissionApproval(
     routed: ReturnType<typeof routeIncomingMessage>,
     message: BotChatMessage,
-  ): Promise<{ allowed: boolean; reason?: string; notifyMessage?: string }> {
+  ): Promise<PermissionApprovalResult> {
     if (routed.permission.allowed) {
       return { allowed: true };
     }
     if (!this.permissionApprover || !this.botId) {
       return {
         allowed: false,
-        notifyMessage: this.config.permissionDeniedReply,
+        ...(this.config.permissionDeniedReply
+          ? { notifyMessage: this.config.permissionDeniedReply }
+          : {}),
       };
     }
 
@@ -734,15 +742,16 @@ class ManagedBotRuntime {
       if (decision.approved) {
         return {
           allowed: true,
-          reason: decision.reason,
+          ...(decision.reason ? { reason: decision.reason } : {}),
         };
       }
+      const notifyMessage =
+        decision.notify_message ??
+        (decision.notify_user ? this.config.permissionDeniedReply : undefined);
       return {
         allowed: false,
-        reason: decision.reason,
-        notifyMessage:
-          decision.notify_message ??
-          (decision.notify_user ? this.config.permissionDeniedReply : undefined),
+        ...(decision.reason ? { reason: decision.reason } : {}),
+        ...(notifyMessage ? { notifyMessage } : {}),
       };
     } catch (error) {
       this.logger.error(
@@ -756,7 +765,9 @@ class ManagedBotRuntime {
       );
       return {
         allowed: false,
-        notifyMessage: this.config.permissionDeniedReply,
+        ...(this.config.permissionDeniedReply
+          ? { notifyMessage: this.config.permissionDeniedReply }
+          : {}),
       };
     }
   }

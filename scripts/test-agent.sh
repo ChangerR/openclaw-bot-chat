@@ -148,8 +148,8 @@ write_generated_config() {
   local state_dir
   local generated_config
 
-  assign_required_env bot_chat_backend_url BOT_CHAT_BACKEND_URL
-  assign_required_env bot_chat_bot_key BOT_CHAT_BOT_KEY
+  assign_required_env bot_chat_backend_url BOT_CHAT_BACKEND_URL BOT_CHAT_BASE_URL
+  assign_required_env bot_chat_bot_key BOT_CHAT_BOT_KEY BOT_CHAT_ACCESS_KEY
   bot_chat_bot_id="$(read_env_value BOT_CHAT_BOT_ID || true)"
   bot_chat_mqtt_tcp_url="$(read_env_value BOT_CHAT_MQTT_TCP_URL || true)"
 
@@ -253,8 +253,8 @@ print_runtime_summary() {
   local bot_chat_bot_id
   local bot_chat_mqtt_tcp_url
 
-  assign_required_env bot_chat_backend_url BOT_CHAT_BACKEND_URL
-  assign_required_env bot_chat_bot_key BOT_CHAT_BOT_KEY
+  assign_required_env bot_chat_backend_url BOT_CHAT_BACKEND_URL BOT_CHAT_BASE_URL
+  assign_required_env bot_chat_bot_key BOT_CHAT_BOT_KEY BOT_CHAT_ACCESS_KEY
   bot_chat_bot_id="$(read_env_value BOT_CHAT_BOT_ID || true)"
   bot_chat_mqtt_tcp_url="$(read_env_value BOT_CHAT_MQTT_TCP_URL || true)"
 

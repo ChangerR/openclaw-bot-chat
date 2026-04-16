@@ -63,6 +63,21 @@ MQTT_PASSWORD=$mqtt_password
 MQTT_TCP_PUBLIC_URL=mqtt://127.0.0.1:1883
 MQTT_WS_PUBLIC_URL=\${PUBLIC_SCHEME}://\${DOMAIN}/mqtt
 JWT_SECRET=$jwt_secret
+STORAGE_PROVIDER=
+STORAGE_BUCKET=
+STORAGE_REGION=
+STORAGE_ENDPOINT=
+STORAGE_PUBLIC_BASE_URL=
+STORAGE_PRIVATE_READ=true
+STORAGE_UPLOAD_URL_TTL=900
+STORAGE_DOWNLOAD_URL_TTL=900
+STORAGE_KEY_PREFIX=chat-assets
+STORAGE_COS_SECRET_ID=
+STORAGE_COS_SECRET_KEY=
+STORAGE_COS_SESSION_TOKEN=
+STORAGE_OSS_ACCESS_KEY_ID=
+STORAGE_OSS_ACCESS_KEY_SECRET=
+STORAGE_OSS_SECURITY_TOKEN=
 EOF
 
   echo "Created $ENV_FILE"
@@ -77,6 +92,54 @@ load_env_file() {
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
+
+  # Prevent unrelated shell exports from forcing object storage on when the
+  # selected env file does not configure it.
+  if ! grep -Eq '^STORAGE_PROVIDER=' "$ENV_FILE"; then
+    STORAGE_PROVIDER=""
+  fi
+  if ! grep -Eq '^STORAGE_BUCKET=' "$ENV_FILE"; then
+    STORAGE_BUCKET=""
+  fi
+  if ! grep -Eq '^STORAGE_REGION=' "$ENV_FILE"; then
+    STORAGE_REGION=""
+  fi
+  if ! grep -Eq '^STORAGE_ENDPOINT=' "$ENV_FILE"; then
+    STORAGE_ENDPOINT=""
+  fi
+  if ! grep -Eq '^STORAGE_PUBLIC_BASE_URL=' "$ENV_FILE"; then
+    STORAGE_PUBLIC_BASE_URL=""
+  fi
+  if ! grep -Eq '^STORAGE_PRIVATE_READ=' "$ENV_FILE"; then
+    STORAGE_PRIVATE_READ="true"
+  fi
+  if ! grep -Eq '^STORAGE_UPLOAD_URL_TTL=' "$ENV_FILE"; then
+    STORAGE_UPLOAD_URL_TTL="900"
+  fi
+  if ! grep -Eq '^STORAGE_DOWNLOAD_URL_TTL=' "$ENV_FILE"; then
+    STORAGE_DOWNLOAD_URL_TTL="900"
+  fi
+  if ! grep -Eq '^STORAGE_KEY_PREFIX=' "$ENV_FILE"; then
+    STORAGE_KEY_PREFIX="chat-assets"
+  fi
+  if ! grep -Eq '^STORAGE_COS_SECRET_ID=' "$ENV_FILE"; then
+    STORAGE_COS_SECRET_ID=""
+  fi
+  if ! grep -Eq '^STORAGE_COS_SECRET_KEY=' "$ENV_FILE"; then
+    STORAGE_COS_SECRET_KEY=""
+  fi
+  if ! grep -Eq '^STORAGE_COS_SESSION_TOKEN=' "$ENV_FILE"; then
+    STORAGE_COS_SESSION_TOKEN=""
+  fi
+  if ! grep -Eq '^STORAGE_OSS_ACCESS_KEY_ID=' "$ENV_FILE"; then
+    STORAGE_OSS_ACCESS_KEY_ID=""
+  fi
+  if ! grep -Eq '^STORAGE_OSS_ACCESS_KEY_SECRET=' "$ENV_FILE"; then
+    STORAGE_OSS_ACCESS_KEY_SECRET=""
+  fi
+  if ! grep -Eq '^STORAGE_OSS_SECURITY_TOKEN=' "$ENV_FILE"; then
+    STORAGE_OSS_SECURITY_TOKEN=""
+  fi
 
   : "${DOMAIN:=test-claw.changer.site}"
   : "${PUBLIC_SCHEME:=http}"
@@ -95,6 +158,21 @@ load_env_file() {
   export NEXT_PUBLIC_API_URL
   export MQTT_TCP_PUBLIC_URL
   export MQTT_WS_PUBLIC_URL
+  export STORAGE_PROVIDER
+  export STORAGE_BUCKET
+  export STORAGE_REGION
+  export STORAGE_ENDPOINT
+  export STORAGE_PUBLIC_BASE_URL
+  export STORAGE_PRIVATE_READ
+  export STORAGE_UPLOAD_URL_TTL
+  export STORAGE_DOWNLOAD_URL_TTL
+  export STORAGE_KEY_PREFIX
+  export STORAGE_COS_SECRET_ID
+  export STORAGE_COS_SECRET_KEY
+  export STORAGE_COS_SESSION_TOKEN
+  export STORAGE_OSS_ACCESS_KEY_ID
+  export STORAGE_OSS_ACCESS_KEY_SECRET
+  export STORAGE_OSS_SECURITY_TOKEN
 }
 
 parse_frontend_mapping() {
