@@ -177,7 +177,7 @@ struct ChatRoomView: View {
                 if viewModel.connectionState != .connected {
                     Text(viewModel.connectionState == .connecting ? "连接中..." : "已断开")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.rcmsTextSecondary)
                         .padding(.vertical, 4)
                 }
 
@@ -204,7 +204,7 @@ struct ChatRoomView: View {
             }
         }
         .navigationTitle(context.title)
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.large)
         .toolbar {
             if context.isGroup {
                 Button {
@@ -229,9 +229,10 @@ struct ChatRoomView: View {
     private var inputBar: some View {
         HStack(spacing: 10) {
             TextField("发送消息", text: $viewModel.inputText, axis: .vertical)
-                .padding(10)
-                .background(Color.white.opacity(0.75))
+                .padding(11)
+                .background(Color.white.opacity(0.82))
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .foregroundStyle(Color.rcmsTextPrimary)
                 .disabled(viewModel.connectionState != .connected)
 
             Button(action: viewModel.sendMessage) {
@@ -243,7 +244,9 @@ struct ChatRoomView: View {
             .disabled(viewModel.inputText.isEmpty || viewModel.connectionState != .connected)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 10)
+        .background(Color.white.opacity(0.72))
         .background(.ultraThinMaterial)
     }
 }
@@ -260,21 +263,21 @@ struct ChatBubbleRow: View {
                 Circle()
                     .fill(Color.white)
                     .frame(width: 30, height: 30)
-                    .overlay(Image(systemName: "person.fill").font(.caption).foregroundStyle(.secondary))
+                    .overlay(Image(systemName: "person.fill").font(.caption).foregroundStyle(Color.rcmsTextSecondary))
             }
 
             VStack(alignment: isMe ? .trailing : .leading, spacing: 4) {
                 if !isMe, let senderName = message.from.name {
                     Text(senderName)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.rcmsTextSecondary)
                 }
 
                 Text(message.content.body ?? "")
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
                     .background(isMe ? Color.rcmsAccent : Color.white)
-                    .foregroundStyle(isMe ? .white : .primary)
+                    .foregroundStyle(isMe ? .white : Color.rcmsTextPrimary)
                     .clipShape(BubbleShape(isMe: isMe))
                     .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
             }
@@ -355,7 +358,7 @@ struct GroupMaintenanceSheet: View {
                                     Text(member.bot?.name ?? member.nickname ?? member.botId.uuidString)
                                     Spacer()
                                     Text("已加入")
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.rcmsTextSecondary)
                                         .font(.caption)
                                 }
                             }
@@ -384,7 +387,7 @@ struct GroupMaintenanceSheet: View {
                 }
             }
             .navigationTitle("群维护")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.large)
         }
     }
 }
