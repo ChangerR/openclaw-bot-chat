@@ -215,13 +215,19 @@ class ManagedBotRuntime {
   }
 
   private resolveBrokerUrl(bootstrap: BootstrapResponse): string {
+    if (this.config.mqttWsUrl) {
+      return this.config.mqttWsUrl;
+    }
+    if (bootstrap.broker.ws_url) {
+      return bootstrap.broker.ws_url;
+    }
     if (this.config.mqttTcpUrl) {
       return this.config.mqttTcpUrl;
     }
     if (bootstrap.broker.tcp_url) {
       return bootstrap.broker.tcp_url;
     }
-    throw new Error(`${this.logPrefix()} bootstrap broker.tcp_url is required`);
+    throw new Error(`${this.logPrefix()} bootstrap broker.ws_url or tcp_url is required`);
   }
 
   private resolveClientId(bootstrap: BootstrapResponse): string {
