@@ -81,9 +81,10 @@ struct BotsView: View {
                 FrostedBackground()
 
                 ScrollView {
-                    VStack(spacing: 12) {
+                    VStack(spacing: 0) {
                         searchBar
                             .padding(.top, 8)
+                            .padding(.bottom, 10)
 
                         if viewModel.isLoading {
                             ProgressView()
@@ -109,13 +110,15 @@ struct BotsView: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .navigationTitle("🤖 单聊")
+            .navigationTitle("Bots")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 Button {
                     showingCreate = true
                 } label: {
                     Image(systemName: "plus")
-                        .font(.headline)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(Color.rcmsAccent)
                 }
             }
             .onAppear { viewModel.fetchBots() }
@@ -129,13 +132,14 @@ struct BotsView: View {
     private var searchBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(.secondary)
+                .foregroundStyle(Color.rcmsTextSecondary)
             TextField("搜索机器人", text: $searchText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled(true)
+                .foregroundStyle(Color.rcmsTextPrimary)
         }
         .padding(12)
-        .background(.ultraThinMaterial)
+        .background(Color(red: 241/255, green: 245/255, blue: 249/255).opacity(0.95))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
@@ -173,31 +177,44 @@ struct BotRowCard: View {
         HStack(spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
                 Circle()
-                    .fill(Color.white.opacity(0.9))
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(red: 224/255, green: 242/255, blue: 254/255), Color(red: 186/255, green: 230/255, blue: 253/255)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                     .frame(width: 52, height: 52)
                     .overlay(Image(systemName: "cpu.fill").foregroundStyle(Color.rcmsAccent))
 
                 Circle()
                     .fill((bot.status == "online") ? Color.rcmsOnline : Color.rcmsOffline)
                     .frame(width: 11, height: 11)
+                    .overlay(Circle().stroke(.white, lineWidth: 2.5))
             }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(bot.name)
                     .font(.headline)
                     .fontWeight(.semibold)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.rcmsTextStrong)
 
                 Text(bot.description ?? "暂无消息")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.rcmsTextSecondary)
                     .lineLimit(1)
             }
 
             Spacer()
         }
-        .frame(height: 72)
-        .padding(.horizontal, 14)
-        .frostedCardStyle()
+        .frame(minHeight: 74)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.7))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.rcmsDivider)
+                .frame(height: 1)
+        }
     }
 }

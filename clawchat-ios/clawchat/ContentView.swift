@@ -39,6 +39,8 @@ struct HomeView: View {
                     }
             }
             .tint(Color.rcmsAccent)
+            .toolbarBackground(.visible, for: .tabBar)
+            .toolbarBackground(Color.white.opacity(0.7), for: .tabBar)
         }
     }
 }

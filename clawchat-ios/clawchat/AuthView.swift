@@ -63,51 +63,77 @@ struct LoginView: View {
     @State private var isRegistering = false
 
     var body: some View {
-        NavigationView {
-            VStack(spacing: 20) {
-                Text("OpenClaw Bot Chat")
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
-                    .padding(.bottom, 40)
+        NavigationStack {
+            ZStack {
+                FrostedBackground()
 
-                TextField("Username or Email", text: $viewModel.identifier)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .autocapitalization(.none)
+                VStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Welcome Back")
+                            .font(.system(size: 34, weight: .bold))
+                            .foregroundStyle(Color.rcmsTextStrong)
+                        Text("Sign in to continue to Bot Chat")
+                            .font(.subheadline)
+                            .foregroundStyle(Color.rcmsTextSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                SecureField("Password", text: $viewModel.password)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    VStack(spacing: 12) {
+                        TextField("Username or Email", text: $viewModel.identifier)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(Color.white.opacity(0.8))
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .foregroundStyle(Color.rcmsTextPrimary)
 
-                if let error = viewModel.errorMessage {
-                    Text(error)
-                        .foregroundColor(.red)
-                        .font(.caption)
-                }
+                        SecureField("Password", text: $viewModel.password)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(Color.white.opacity(0.8))
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .foregroundStyle(Color.rcmsTextPrimary)
 
-                Button(action: viewModel.login) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                    } else {
-                        Text("Login")
+                        if let error = viewModel.errorMessage {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(Color.rcmsDanger)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        Button(action: viewModel.login) {
+                            Group {
+                                if viewModel.isLoading {
+                                    ProgressView().tint(.white)
+                                } else {
+                                    Text("Login")
+                                        .fontWeight(.semibold)
+                                }
+                            }
                             .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue)
-                            .foregroundColor(.white)
-                            .cornerRadius(10)
+                            .padding(.vertical, 13)
+                            .background(Color.rcmsAccent)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        .disabled(viewModel.isLoading)
                     }
-                }
-                .disabled(viewModel.isLoading)
 
-                NavigationLink(destination: RegisterView(), isActive: $isRegistering) {
-                    Button(action: { isRegistering = true }) {
-                        Text("Don't have an account? Register")
-                            .font(.footnote)
+                    NavigationLink(destination: RegisterView(), isActive: $isRegistering) { EmptyView() }
+                        .hidden()
+
+                    Button("Don't have an account? Register") {
+                        isRegistering = true
                     }
+                    .font(.footnote)
+                    .foregroundStyle(Color.rcmsAccent)
                 }
-
-                Spacer()
+                .padding(22)
+                .glassCardStyle()
+                .padding(.horizontal, 16)
             }
-            .padding()
-            .navigationBarHidden(true)
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 }
@@ -116,48 +142,63 @@ struct RegisterView: View {
     @StateObject private var viewModel = AuthViewModel()
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Create Account")
-                .font(.largeTitle)
-                .fontWeight(.bold)
-                .padding(.bottom, 40)
+        ZStack {
+            FrostedBackground()
 
-            TextField("Username", text: $viewModel.username)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-                .autocapitalization(.none)
-
-            TextField("Email", text: $viewModel.email)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-                .autocapitalization(.none)
-                .keyboardType(.emailAddress)
-
-            SecureField("Password", text: $viewModel.password)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-
-            if let error = viewModel.errorMessage {
-                Text(error)
-                    .foregroundColor(.red)
-                    .font(.caption)
-            }
-
-            Button(action: viewModel.register) {
-                if viewModel.isLoading {
-                    ProgressView()
-                } else {
-                    Text("Register")
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.green)
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
+            VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Create Account")
+                        .font(.system(size: 34, weight: .bold))
+                        .foregroundStyle(Color.rcmsTextStrong)
+                    Text("Join Bot Chat and start messaging")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.rcmsTextSecondary)
                 }
-            }
-            .disabled(viewModel.isLoading)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer()
+                Group {
+                    TextField("Username", text: $viewModel.username)
+                    TextField("Email", text: $viewModel.email)
+                        .keyboardType(.emailAddress)
+                    SecureField("Password", text: $viewModel.password)
+                }
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(Color.white.opacity(0.8))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .foregroundStyle(Color.rcmsTextPrimary)
+
+                if let error = viewModel.errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(Color.rcmsDanger)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Button(action: viewModel.register) {
+                    Group {
+                        if viewModel.isLoading {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Register")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(Color.rcmsAccent)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .disabled(viewModel.isLoading)
+            }
+            .padding(22)
+            .glassCardStyle()
+            .padding(.horizontal, 16)
         }
-        .padding()
-        .navigationTitle("Register")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
