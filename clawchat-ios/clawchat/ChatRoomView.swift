@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import MarkdownUI
 
 struct ChatContext {
     let id: String
@@ -251,6 +252,50 @@ struct ChatRoomView: View {
     }
 }
 
+struct MessageMarkdownView: View {
+    let text: String
+    let isMe: Bool
+
+    var body: some View {
+        Markdown(text)
+            .markdownTheme(.rcmsChatTheme(isMe: isMe))
+            .tint(isMe ? .white : .rcmsAccent)
+    }
+}
+
+extension Theme {
+    static func rcmsChatTheme(isMe: Bool) -> Theme {
+        Theme()
+            .text {
+                ForegroundColor(isMe ? .white : Color.rcmsTextPrimary)
+                FontSize(15)
+            }
+            .code {
+                FontFamilyVariant(.monospaced)
+                FontSize(14)
+                BackgroundColor(isMe ? Color.white.opacity(0.15) : Color.gray.opacity(0.1))
+            }
+            .codeBlock { configuration in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    configuration.label
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(10)
+                }
+                .background(isMe ? Color.black.opacity(0.15) : Color.gray.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .markdownMargin(top: 8, bottom: 8)
+            }
+            .link {
+                ForegroundColor(isMe ? .white : Color.rcmsAccent)
+            }
+            .paragraph { configuration in
+                configuration.label
+                    .fixedSize(horizontal: false, vertical: true)
+                    .markdownMargin(top: 0, bottom: 0)
+            }
+    }
+}
+
 struct ChatBubbleRow: View {
     let message: Message
     private var isMe: Bool {
@@ -273,13 +318,15 @@ struct ChatBubbleRow: View {
                         .foregroundStyle(Color.rcmsTextSecondary)
                 }
 
-                Text(message.content.body ?? "")
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(isMe ? Color.rcmsAccent : Color.white)
-                    .foregroundStyle(isMe ? .white : Color.rcmsTextPrimary)
-                    .clipShape(BubbleShape(isMe: isMe))
-                    .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+                if let body = message.content.body {
+                    MessageMarkdownView(text: body, isMe: isMe)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(isMe ? Color.rcmsAccent : Color.white)
+                        .foregroundStyle(isMe ? .white : Color.rcmsTextPrimary)
+                        .clipShape(BubbleShape(isMe: isMe))
+                        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+                }
             }
 
             if isMe { Spacer(minLength: 12) }

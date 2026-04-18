@@ -3,7 +3,7 @@ import Combine
 
 class APIClient {
     static let shared = APIClient()
-    private let baseURL = URL(string: "http://localhost:8080")! // Adjust for production
+    private let baseURL = URL(string: "https://test.iotdevices.site")! // Adjust for production
 
     private let session: URLSession
 

@@ -7,6 +7,7 @@ struct ContentView: View {
         Group {
             if authManager.isAuthenticated {
                 HomeView()
+                    .preferredColorScheme(.light)
                     .onAppear {
                         RealtimeService.shared.start()
                     }
