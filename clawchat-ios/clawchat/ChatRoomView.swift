@@ -498,7 +498,10 @@ struct ChatRoomView: View {
                     .onAppear {
                         scrollToBottom(with: proxy, animated: false)
                     }
-                    .onChange(of: viewModel.messages.map(\.id)) {
+                    .onChange(of: viewModel.messages.map(\.id)) { oldIDs, newIDs in
+                        guard shouldAutoScrollToBottom(oldIDs: oldIDs, newIDs: newIDs) else {
+                            return
+                        }
                         scrollToBottom(with: proxy)
                     }
                 }
@@ -625,6 +628,24 @@ struct ChatRoomView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             scroll()
         }
+    }
+
+    private func shouldAutoScrollToBottom(oldIDs: [String], newIDs: [String]) -> Bool {
+        guard !newIDs.isEmpty else { return false }
+        guard !oldIDs.isEmpty else { return true } // Initial load.
+
+        // Prepending older history keeps the same latest message id, so don't jump.
+        guard oldIDs.last != newIDs.last else { return false }
+
+        // Auto-scroll when new messages are appended at the end.
+        if newIDs.count >= oldIDs.count {
+            let oldPrefix = Array(newIDs.prefix(oldIDs.count))
+            if oldPrefix == oldIDs {
+                return true
+            }
+        }
+
+        return false
     }
 }
 
