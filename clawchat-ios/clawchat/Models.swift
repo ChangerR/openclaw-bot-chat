@@ -110,12 +110,77 @@ struct ChatPeer: Codable {
     var avatar: String?
 }
 
+struct Asset: Codable {
+    var id: String?
+    var kind: String?
+    var status: String?
+    var objectKey: String?
+    var mimeType: String?
+    var size: Int?
+    var fileName: String?
+    var downloadURL: String?
+    var externalURL: String?
+    var sourceURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, status, size
+        case objectKey = "object_key"
+        case mimeType = "mime_type"
+        case fileName = "file_name"
+        case downloadURL = "download_url"
+        case externalURL = "external_url"
+        case sourceURL = "source_url"
+    }
+}
+
+struct PreparedUpload: Codable {
+    let asset: Asset
+    let upload: PresignedUpload
+}
+
+struct PresignedUpload: Codable {
+    let method: String
+    let url: String
+    let headers: [String: String]?
+    let expiresAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case method, url, headers
+        case expiresAt = "expires_at"
+    }
+}
+
+struct PrepareImageUploadRequest: Codable {
+    let fileName: String
+    let contentType: String
+    let size: Int
+    let conversationId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case size
+        case fileName = "file_name"
+        case contentType = "content_type"
+        case conversationId = "conversation_id"
+    }
+}
+
+struct CompleteImageUploadRequest: Codable {
+    let assetId: String
+    let objectKey: String
+
+    enum CodingKeys: String, CodingKey {
+        case assetId = "asset_id"
+        case objectKey = "object_key"
+    }
+}
+
 struct MessageContent: Codable {
     var type: String
     var body: String?
     var url: String?
     var name: String?
     var size: Int?
+    var meta: [String: AnyCodable]?
 }
 
 struct Message: Codable, Identifiable {
@@ -192,6 +257,33 @@ struct Conversation: Codable, Identifiable {
         case targetId = "targetId"
         case lastMessage = "lastMessage"
         case unreadCount = "unreadCount"
+    }
+}
+
+// MARK: - Display Helpers
+
+extension Message {
+    var displayDate: Date? {
+        if let createdAt {
+            return createdAt
+        }
+        guard let timestamp else {
+            return nil
+        }
+
+        let normalizedTimestamp = timestamp > 1_000_000_000_000 ? Double(timestamp) / 1000 : Double(timestamp)
+        return Date(timeIntervalSince1970: normalizedTimestamp)
+    }
+}
+
+extension Conversation.MessageSnippet {
+    var displayDate: Date? {
+        guard let timestamp else {
+            return nil
+        }
+
+        let normalizedTimestamp = timestamp > 1_000_000_000_000 ? Double(timestamp) / 1000 : Double(timestamp)
+        return Date(timeIntervalSince1970: normalizedTimestamp)
     }
 }
 
@@ -301,6 +393,113 @@ struct AnyCodable: Codable {
     }
 }
 
+extension AnyCodable {
+    var stringValue: String? {
+        value as? String
+    }
+
+    var boolValue: Bool? {
+        value as? Bool
+    }
+
+    var dictionaryValue: [String: AnyCodable]? {
+        value as? [String: AnyCodable]
+    }
+
+    var jsonObject: Any {
+        if let dictionaryValue {
+            return dictionaryValue.mapValues(\.jsonObject)
+        }
+
+        if let array = value as? [AnyCodable] {
+            return array.map(\.jsonObject)
+        }
+
+        return value
+    }
+}
+
+extension Asset {
+    var preferredImageURLString: String? {
+        let candidates = [downloadURL, externalURL, sourceURL]
+        return candidates
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+    }
+
+    var metaValue: AnyCodable {
+        var dictionary: [String: AnyCodable] = [:]
+
+        if let id, !id.isEmpty {
+            dictionary["id"] = AnyCodable(id)
+        }
+        if let kind, !kind.isEmpty {
+            dictionary["kind"] = AnyCodable(kind)
+        }
+        if let status, !status.isEmpty {
+            dictionary["status"] = AnyCodable(status)
+        }
+        if let objectKey, !objectKey.isEmpty {
+            dictionary["object_key"] = AnyCodable(objectKey)
+        }
+        if let mimeType, !mimeType.isEmpty {
+            dictionary["mime_type"] = AnyCodable(mimeType)
+        }
+        if let size {
+            dictionary["size"] = AnyCodable(size)
+        }
+        if let fileName, !fileName.isEmpty {
+            dictionary["file_name"] = AnyCodable(fileName)
+        }
+        if let downloadURL, !downloadURL.isEmpty {
+            dictionary["download_url"] = AnyCodable(downloadURL)
+        }
+        if let externalURL, !externalURL.isEmpty {
+            dictionary["external_url"] = AnyCodable(externalURL)
+        }
+        if let sourceURL, !sourceURL.isEmpty {
+            dictionary["source_url"] = AnyCodable(sourceURL)
+        }
+
+        return AnyCodable(dictionary)
+    }
+
+    static func from(meta: [String: AnyCodable]?) -> Asset? {
+        guard let assetMeta = meta?["asset"]?.dictionaryValue else {
+            return nil
+        }
+
+        let jsonObject = assetMeta.mapValues(\.jsonObject)
+        guard JSONSerialization.isValidJSONObject(jsonObject) else {
+            return nil
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: jsonObject) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(Asset.self, from: data)
+    }
+}
+
+extension MessageContent {
+    var asset: Asset? {
+        Asset.from(meta: meta)
+    }
+
+    var imageURLString: String? {
+        let directURL = url?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let directURL, !directURL.isEmpty {
+            return directURL
+        }
+        return asset?.preferredImageURLString
+    }
+
+    var isSticker: Bool {
+        meta?["is_sticker"]?.boolValue == true
+    }
+}
+
 extension Message {
     init(from payload: RealtimeMessagePayload) {
         self.id = payload.id
@@ -310,7 +509,7 @@ extension Message {
         self.senderType = payload.from.type
         self.from = ChatPeer(type: payload.from.type, id: payload.from.id, name: payload.from.name, avatar: payload.from.avatar)
         self.to = ChatPeer(type: payload.to.type, id: payload.to.id, name: payload.to.name, avatar: payload.to.avatar)
-        self.content = MessageContent(type: payload.content.type, body: payload.content.body, url: payload.content.url, name: payload.content.name, size: payload.content.size)
+        self.content = MessageContent(type: payload.content.type, body: payload.content.body, url: payload.content.url, name: payload.content.name, size: payload.content.size, meta: payload.content.meta)
         self.seq = Int(payload.seq ?? 0)
         self.timestamp = payload.timestamp
         self.createdAt = Date(timeIntervalSince1970: Double(payload.timestamp))

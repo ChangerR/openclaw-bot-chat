@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var authManager = AuthManager.shared
 
     var body: some View {
@@ -9,6 +10,12 @@ struct ContentView: View {
                 HomeView()
                     .preferredColorScheme(.light)
                     .onAppear {
+                        authManager.refreshCurrentUserIfNeeded()
+                        RealtimeService.shared.start()
+                    }
+                    .onChange(of: scenePhase) { _, newPhase in
+                        guard newPhase == .active else { return }
+                        authManager.refreshCurrentUserIfNeeded()
                         RealtimeService.shared.start()
                     }
             } else {
