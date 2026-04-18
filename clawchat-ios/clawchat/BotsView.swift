@@ -68,11 +68,11 @@ struct BotsView: View {
             return mqttTopic
         }
 
-        guard let userID = AuthManager.shared.currentUser?.id.uuidString else {
+        guard let userID = AuthManager.shared.currentUser?.id.uuidString.lowercased() else {
             return nil
         }
 
-        return "chat/dm/user/\(userID)/bot/\(bot.id.uuidString)"
+        return "chat/dm/user/\(userID)/bot/\(bot.id.uuidString.lowercased())"
     }
 
     var body: some View {
@@ -112,6 +112,8 @@ struct BotsView: View {
             }
             .navigationTitle("Bots")
             .navigationBarTitleDisplayMode(.large)
+            .toolbarColorScheme(.light, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 Button {
                     showingCreate = true

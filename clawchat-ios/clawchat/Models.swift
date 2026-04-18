@@ -103,22 +103,15 @@ struct GroupBotMember: Codable, Identifiable {
 
 // MARK: - Chat & Messages
 
-enum ChatPeerType: String, Codable {
-    case user, bot, group, system
-}
-
 struct ChatPeer: Codable {
-    let type: ChatPeerType
+    let type: String
     let id: String
     var name: String?
     var avatar: String?
 }
 
 struct MessageContent: Codable {
-    enum ContentType: String, Codable {
-        case text, image, file, audio, video
-    }
-    var type: ContentType
+    var type: String
     var body: String?
     var url: String?
     var name: String?
@@ -130,7 +123,7 @@ struct Message: Codable, Identifiable {
     var conversationId: String
     var topic: String
     var senderId: String
-    var senderType: ChatPeerType
+    var senderType: String
     var from: ChatPeer
     var to: ChatPeer
     var content: MessageContent
@@ -139,11 +132,44 @@ struct Message: Codable, Identifiable {
     var createdAt: Date?
 
     enum CodingKeys: String, CodingKey {
-        case id, topic, from, to, content, seq, timestamp
+        case id, from, to, content, seq, timestamp
         case conversationId = "conversation_id"
+        case topic = "mqtt_topic"
         case senderId = "sender_id"
         case senderType = "sender_type"
         case createdAt = "created_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        conversationId = try container.decode(String.self, forKey: .conversationId)
+        
+        // Topic might come from mqtt_topic or be missing, fallback to conversationId
+        if let topicVal = try? container.decodeIfPresent(String.self, forKey: .topic) {
+            topic = topicVal
+        } else {
+            topic = conversationId
+        }
+
+        from = try container.decode(ChatPeer.self, forKey: .from)
+        to = try container.decode(ChatPeer.self, forKey: .to)
+        content = try container.decode(MessageContent.self, forKey: .content)
+        seq = try container.decodeIfPresent(Int.self, forKey: .seq)
+        timestamp = try container.decodeIfPresent(Int64.self, forKey: .timestamp)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+        
+        if let sId = try? container.decodeIfPresent(String.self, forKey: .senderId) {
+            senderId = sId
+        } else {
+            senderId = from.id
+        }
+        
+        if let sType = try? container.decodeIfPresent(String.self, forKey: .senderType) {
+            senderType = sType
+        } else {
+            senderType = from.type
+        }
     }
 }
 
@@ -281,10 +307,10 @@ extension Message {
         self.conversationId = payload.conversationId
         self.topic = payload.topic
         self.senderId = payload.from.id
-        self.senderType = ChatPeerType(rawValue: payload.from.type) ?? .user
-        self.from = ChatPeer(type: self.senderType, id: payload.from.id, name: payload.from.name, avatar: payload.from.avatar)
-        self.to = ChatPeer(type: ChatPeerType(rawValue: payload.to.type) ?? .bot, id: payload.to.id, name: payload.to.name, avatar: payload.to.avatar)
-        self.content = MessageContent(type: MessageContent.ContentType(rawValue: payload.content.type) ?? .text, body: payload.content.body, url: payload.content.url, name: payload.content.name, size: payload.content.size)
+        self.senderType = payload.from.type
+        self.from = ChatPeer(type: payload.from.type, id: payload.from.id, name: payload.from.name, avatar: payload.from.avatar)
+        self.to = ChatPeer(type: payload.to.type, id: payload.to.id, name: payload.to.name, avatar: payload.to.avatar)
+        self.content = MessageContent(type: payload.content.type, body: payload.content.body, url: payload.content.url, name: payload.content.name, size: payload.content.size)
         self.seq = Int(payload.seq ?? 0)
         self.timestamp = payload.timestamp
         self.createdAt = Date(timeIntervalSince1970: Double(payload.timestamp))

@@ -76,17 +76,17 @@ class RealtimeService: NSObject, ObservableObject {
         guard let mqttClient, let user = AuthManager.shared.currentUser else { return }
 
         let route = MessageRoute(topic: topic)
-        guard let target = route.targetForSender(type: "user", id: user.id.uuidString) else {
+        guard let target = route.targetForSender(type: "user", id: user.id.uuidString.lowercased()) else {
             print("Cannot resolve message target for topic: \(topic)")
             return
         }
 
         let payload = RealtimeMessagePayload(
-            id: UUID().uuidString,
+            id: UUID().uuidString.lowercased(),
             topic: topic,
             conversationId: conversationId,
             timestamp: Int64(Date().timeIntervalSince1970),
-            from: MessagePeerPayload(type: "user", id: user.id.uuidString, name: user.username),
+            from: MessagePeerPayload(type: "user", id: user.id.uuidString.lowercased(), name: user.username),
             to: MessagePeerPayload(type: target.type, id: target.id, name: nil),
             content: RealtimeContentPayload(type: "text", body: text),
             seq: nil
