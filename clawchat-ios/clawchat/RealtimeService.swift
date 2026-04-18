@@ -57,10 +57,14 @@ class RealtimeService: NSObject, ObservableObject {
 
         connectionState = .connecting
 
-        let websocket = CocoaMQTTWebSocket(uri: url.path.isEmpty ? "/mqtt" : url.path)
-        websocket.enableSSL = url.scheme == "wss"
+        let isSecure = (url.scheme == "wss" || url.scheme == "https")
+        let defaultPort = isSecure ? 443 : 80
+        let port = url.port ?? defaultPort
 
-        let mqtt = CocoaMQTT5(clientID: bootstrap.clientId, host: host, port: UInt16(url.port ?? 80), socket: websocket)
+        let websocket = CocoaMQTTWebSocket(uri: url.path.isEmpty ? "/mqtt" : url.path)
+        websocket.enableSSL = isSecure
+
+        let mqtt = CocoaMQTT5(clientID: bootstrap.clientId, host: host, port: UInt16(port), socket: websocket)
         mqtt.username = bootstrap.broker.username
         mqtt.password = bootstrap.broker.password
         mqtt.keepAlive = 60
