@@ -3,12 +3,26 @@ import Combine
 
 class APIClient {
     static let shared = APIClient()
-    private let baseURL = URL(string: "https://test.iotdevices.site")! // Adjust for production
+    let baseURL: URL
 
     private let session: URLSession
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = .shared, baseURL: URL = URL(string: "https://test.iotdevices.site")!) {
         self.session = session
+        self.baseURL = baseURL
+    }
+
+    var brokerWebSocketFallbackURL: URL? {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+
+        components.scheme = components.scheme == "https" ? "wss" : "ws"
+        components.path = "/mqtt"
+        components.query = nil
+        components.fragment = nil
+
+        return components.url
     }
 
     enum APIError: Error {
@@ -57,6 +71,7 @@ class APIClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = 15
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
 
@@ -99,6 +114,109 @@ class APIClient {
     }
 
     struct EmptyResponse: Codable {}
+
+    func requestValue<T: Codable>(_ endpoint: String,
+                                  method: String = "GET",
+                                  body: Data? = nil,
+                                  requiresAuth: Bool = true) async throws -> T {
+
+        guard let url = URL(string: endpoint, relativeTo: baseURL) else {
+            throw APIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 15
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+
+        if requiresAuth, let token = AuthManager.shared.accessToken {
+            request.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.serverError("Invalid response")
+        }
+
+        if httpResponse.statusCode == 401 {
+            AuthManager.shared.logout()
+            throw APIError.unauthorized
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Server error"
+            throw APIError.serverError(errorMessage)
+        }
+
+        let apiResponse = try Self.decoder.decode(ApiResponse<T>.self, from: data)
+        if apiResponse.code != 0 {
+            throw APIError.serverError(apiResponse.message)
+        }
+
+        guard let payload = apiResponse.data else {
+            if T.self == EmptyResponse.self {
+                return EmptyResponse() as! T
+            }
+            throw APIError.noData
+        }
+
+        return payload
+    }
+
+    func prepareImageUpload(fileName: String,
+                            contentType: String,
+                            size: Int,
+                            conversationID: String?) async throws -> PreparedUpload {
+        let body = try JSONEncoder().encode(
+            PrepareImageUploadRequest(
+                fileName: fileName,
+                contentType: contentType,
+                size: size,
+                conversationId: conversationID
+            )
+        )
+        return try await requestValue(
+            "/api/v1/assets/image/upload-prepare",
+            method: "POST",
+            body: body
+        )
+    }
+
+    func completeImageUpload(assetID: String, objectKey: String) async throws -> Asset {
+        let body = try JSONEncoder().encode(
+            CompleteImageUploadRequest(assetId: assetID, objectKey: objectKey)
+        )
+        return try await requestValue(
+            "/api/v1/assets/image/complete",
+            method: "POST",
+            body: body
+        )
+    }
+
+    func uploadImageData(_ data: Data, with upload: PresignedUpload) async throws {
+        guard let url = URL(string: upload.url) else {
+            throw APIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = upload.method.isEmpty ? "PUT" : upload.method
+        request.timeoutInterval = 60
+        request.httpBody = data
+
+        upload.headers?.forEach { key, value in
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let (_, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.serverError("Invalid upload response")
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.serverError("Upload failed with status \(httpResponse.statusCode)")
+        }
+    }
 }
 
 class AuthManager: ObservableObject {
@@ -110,6 +228,8 @@ class AuthManager: ObservableObject {
     private let userDefaults = UserDefaults.standard
     private let accessTokenKey = "access_token"
     private let refreshTokenKey = "refresh_token"
+    private var cancellables = Set<AnyCancellable>()
+    private var isRefreshingCurrentUser = false
 
     var accessToken: String? {
         userDefaults.string(forKey: accessTokenKey)
@@ -117,6 +237,27 @@ class AuthManager: ObservableObject {
 
     init() {
         self.isAuthenticated = accessToken != nil
+    }
+
+    func refreshCurrentUserIfNeeded(force: Bool = false) {
+        guard isAuthenticated else { return }
+        guard force || currentUser == nil else { return }
+        guard !isRefreshingCurrentUser else { return }
+
+        isRefreshingCurrentUser = true
+
+        APIClient.shared.request("/api/v1/auth/me")
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] completion in
+                self?.isRefreshingCurrentUser = false
+                if case .failure(let error) = completion {
+                    print("Failed to refresh current user: \(error.localizedDescription)")
+                }
+            } receiveValue: { [weak self] (user: User) in
+                self?.currentUser = user
+                self?.isAuthenticated = true
+            }
+            .store(in: &cancellables)
     }
 
     func login(payload: AuthPayload) {

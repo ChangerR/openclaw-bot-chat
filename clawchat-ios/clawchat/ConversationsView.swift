@@ -8,8 +8,20 @@ class ConversationsViewModel: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
+    init() {
+        NotificationCenter.default.publisher(for: LocalMessageStore.conversationsDidChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.reloadCachedConversations()
+            }
+            .store(in: &cancellables)
+    }
+
     func fetchConversations() {
-        isLoading = true
+        errorMessage = nil
+        reloadCachedConversations()
+        isLoading = false
+
         APIClient.shared.request("/api/v1/conversations")
             .receive(on: DispatchQueue.main)
             .sink { completion in
@@ -18,9 +30,25 @@ class ConversationsViewModel: ObservableObject {
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (conversations: [Conversation]) in
-                self.conversations = conversations
+                LocalMessageStore.shared.upsert(conversations: conversations)
+                self.conversations = self.sortConversations(conversations)
             }
             .store(in: &cancellables)
+    }
+
+    private func reloadCachedConversations() {
+        conversations = sortConversations(LocalMessageStore.shared.cachedConversations())
+    }
+
+    private func sortConversations(_ items: [Conversation]) -> [Conversation] {
+        items.sorted { lhs, rhs in
+            let leftTimestamp = lhs.lastMessage?.timestamp ?? Int64.min
+            let rightTimestamp = rhs.lastMessage?.timestamp ?? Int64.min
+            if leftTimestamp != rightTimestamp {
+                return leftTimestamp > rightTimestamp
+            }
+            return lhs.id < rhs.id
+        }
     }
 }
 
@@ -48,6 +76,43 @@ struct ConversationsView: View {
 struct ConversationRow: View {
     let conversation: Conversation
 
+    private var lastMessageTimestamp: String? {
+        guard let date = conversation.lastMessage?.displayDate else {
+            return nil
+        }
+
+        if Calendar.current.isDateInToday(date) {
+            return ConversationRow.timeFormatter.string(from: date)
+        }
+
+        if Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year) {
+            return ConversationRow.dayFormatter.string(from: date)
+        }
+
+        return ConversationRow.yearFormatter.string(from: date)
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateFormat = "M/d"
+        return formatter
+    }()
+
+    private static let yearFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy/M/d"
+        return formatter
+    }()
+
     var body: some View {
         HStack {
             Image(systemName: "person.circle.fill")
@@ -55,9 +120,20 @@ struct ConversationRow: View {
                 .frame(width: 40, height: 40)
                 .foregroundColor(.gray)
             
-            VStack(alignment: .leading) {
-                Text(conversation.name)
-                    .font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(conversation.name)
+                        .font(.headline)
+
+                    Spacer(minLength: 8)
+
+                    if let lastMessageTimestamp {
+                        Text(lastMessageTimestamp)
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                    }
+                }
+
                 if let lastMsg = conversation.lastMessage?.content {
                     Text(lastMsg)
                         .font(.subheadline)
@@ -65,9 +141,7 @@ struct ConversationRow: View {
                         .lineLimit(1)
                 }
             }
-            
-            Spacer()
-            
+
             if let count = conversation.unreadCount, count > 0 {
                 Circle()
                     .fill(Color.blue)

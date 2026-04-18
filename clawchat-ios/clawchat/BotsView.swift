@@ -47,6 +47,7 @@ class BotsViewModel: ObservableObject {
 
 struct BotsView: View {
     @StateObject private var viewModel = BotsViewModel()
+    @ObservedObject private var authManager = AuthManager.shared
     @State private var showingCreate = false
     @State private var newName = ""
     @State private var newDescription = ""
@@ -68,7 +69,7 @@ struct BotsView: View {
             return mqttTopic
         }
 
-        guard let userID = AuthManager.shared.currentUser?.id.uuidString.lowercased() else {
+        guard let userID = authManager.currentUser?.id.uuidString.lowercased() else {
             return nil
         }
 
@@ -123,7 +124,10 @@ struct BotsView: View {
                         .foregroundStyle(Color.rcmsAccent)
                 }
             }
-            .onAppear { viewModel.fetchBots() }
+            .onAppear {
+                authManager.refreshCurrentUserIfNeeded()
+                viewModel.fetchBots()
+            }
             .refreshable { viewModel.fetchBots() }
             .sheet(isPresented: $showingCreate) {
                 createBotSheet
@@ -209,7 +213,8 @@ struct BotRowCard: View {
 
             Spacer()
         }
-        .frame(minHeight: 74)
+        .frame(maxWidth: .infinity, minHeight: 74, alignment: .leading)
+        .contentShape(Rectangle())
         .padding(.horizontal, 4)
         .padding(.vertical, 8)
         .background(Color.white.opacity(0.7))
