@@ -11,6 +11,16 @@ struct ChatContext {
     let subtitle: String
     let isGroup: Bool
     let groupId: String?
+    let bot: Bot?
+    
+    init(id: String, title: String, subtitle: String, isGroup: Bool, groupId: String? = nil, bot: Bot? = nil) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.isGroup = isGroup
+        self.groupId = groupId
+        self.bot = bot
+    }
 }
 
 class ChatRoomViewModel: ObservableObject {
@@ -560,7 +570,13 @@ struct ChatRoomView: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var previewMessage: Message?
     @State private var pendingImageSelection: PendingImageSelection?
+    @State private var scrollViewportHeight: CGFloat = 0
+    @State private var topVisibleMessageID: String?
+    @State private var isNearBottom = true
     private let bottomAnchorID = "chat-room-bottom-anchor"
+    private let scrollCoordinateSpaceName = "chat-room-scroll-space"
+    private let bottomAutoScrollThreshold: CGFloat = 96
+    @FocusState private var isInputFocused: Bool
 
     init(context: ChatContext) {
         self.context = context
@@ -586,7 +602,7 @@ struct ChatRoomView: View {
 
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 10) {
+                        VStack(spacing: 10) {
                             ForEach(viewModel.messages) { message in
                                 ChatBubbleRow(
                                     message: message,
@@ -595,18 +611,52 @@ struct ChatRoomView: View {
                                     onPreviewImage: { previewMessage = $0 }
                                 )
                                     .id(message.id)
+                                    .background(
+                                        ChatScrollFrameReader(
+                                            id: message.id,
+                                            coordinateSpaceName: scrollCoordinateSpaceName
+                                        )
+                                    )
                             }
 
                             Color.clear
                                 .frame(height: 1)
                                 .id(bottomAnchorID)
+                                .background(
+                                    ChatScrollFrameReader(
+                                        id: bottomAnchorID,
+                                        coordinateSpaceName: scrollCoordinateSpaceName
+                                    )
+                                )
                         }
                         .padding(.horizontal, 12)
                         .padding(.top, 8)
                         .padding(.bottom, 16)
                     }
+                    .coordinateSpace(name: scrollCoordinateSpaceName)
+                    .background(
+                        GeometryReader { geometry in
+                            Color.clear
+                                .preference(
+                                    key: ChatScrollViewportHeightPreferenceKey.self,
+                                    value: geometry.size.height
+                                )
+                        }
+                    )
+                    .onPreferenceChange(ChatScrollViewportHeightPreferenceKey.self) { height in
+                        scrollViewportHeight = height
+                    }
+                    .onPreferenceChange(ChatScrollFramePreferenceKey.self) { frames in
+                        updateScrollMetrics(using: frames)
+                    }
+                    .scrollDismissesKeyboard(.interactively)
+                    .onTapGesture {
+                        isInputFocused = false
+                    }
                     .refreshable {
+                        let anchorID = topVisibleMessageID ?? viewModel.messages.first?.id
                         await viewModel.loadOlderMessages()
+                        await restoreVisiblePosition(anchorID, with: proxy)
                     }
                     .onAppear {
                         scrollToBottom(with: proxy, animated: false)
@@ -615,7 +665,18 @@ struct ChatRoomView: View {
                         guard shouldAutoScrollToBottom(oldIDs: oldIDs, newIDs: newIDs) else {
                             return
                         }
+                        guard isNearBottom || latestMessageWasSentByCurrentUser else {
+                            return
+                        }
                         scrollToBottom(with: proxy)
+                    }
+                    .onChange(of: isInputFocused) { _, isFocused in
+                        if isFocused {
+                            // Delay slightly to let the keyboard animation start and frame adjust
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                                scrollToBottom(with: proxy)
+                            }
+                        }
                     }
                 }
 
@@ -633,6 +694,13 @@ struct ChatRoomView: View {
                         groupVM.bootstrap(groupId: groupId, currentName: context.title)
                     }
                 } label: {
+                    Image(systemName: "gearshape.fill")
+                }
+            } else if let bot = context.bot {
+                NavigationLink(destination: BotSettingsView(bot: bot, onBotUpdated: {
+                    // ChatRoomView doesn't manage the bot list, but the updated bot info 
+                    // will be fetched when returning to BotsView.
+                })) {
                     Image(systemName: "gearshape.fill")
                 }
             }
@@ -708,6 +776,7 @@ struct ChatRoomView: View {
             .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
 
             TextField("发送消息", text: $viewModel.inputText, axis: .vertical)
+                .focused($isInputFocused)
                 .padding(11)
                 .background(Color.white.opacity(0.82))
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -746,23 +815,7 @@ struct ChatRoomView: View {
     }
 
     private func scrollToBottom(with proxy: ScrollViewProxy, animated: Bool = true) {
-        let scroll = {
-            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-        }
-
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    scroll()
-                }
-            } else {
-                scroll()
-            }
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            scroll()
-        }
+        scrollToMessage(bottomAnchorID, with: proxy, anchor: .bottom, animated: animated)
     }
 
     private func shouldAutoScrollToBottom(oldIDs: [String], newIDs: [String]) -> Bool {
@@ -781,6 +834,94 @@ struct ChatRoomView: View {
         }
 
         return false
+    }
+
+    private var latestMessageWasSentByCurrentUser: Bool {
+        normalizeIdentifier(viewModel.messages.last?.senderId) == normalizeIdentifier(authManager.currentUser?.id.uuidString)
+    }
+
+    private func normalizeIdentifier(_ value: String?) -> String {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    @MainActor
+    private func restoreVisiblePosition(_ messageID: String?, with proxy: ScrollViewProxy) async {
+        guard let messageID else { return }
+        await Task.yield()
+        scrollToMessage(messageID, with: proxy, anchor: .top, animated: false)
+    }
+
+    private func scrollToMessage(
+        _ messageID: String,
+        with proxy: ScrollViewProxy,
+        anchor: UnitPoint,
+        animated: Bool
+    ) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(messageID, anchor: anchor)
+                }
+            } else {
+                proxy.scrollTo(messageID, anchor: anchor)
+            }
+        }
+    }
+
+    private func updateScrollMetrics(using frames: [String: CGRect]) {
+        guard scrollViewportHeight > 0 else { return }
+
+        DispatchQueue.main.async {
+            if let bottomFrame = frames[self.bottomAnchorID] {
+                self.isNearBottom = (bottomFrame.maxY - self.scrollViewportHeight) <= self.bottomAutoScrollThreshold
+            }
+
+            let visibleFrames = self.viewModel.messages.compactMap { message -> (String, CGRect)? in
+                guard let frame = frames[message.id], frame.maxY > 0, frame.minY < self.scrollViewportHeight else {
+                    return nil
+                }
+                return (message.id, frame)
+            }
+
+            if let anchorID = visibleFrames
+                .sorted(by: { $0.1.minY < $1.1.minY })
+                .first(where: { $0.1.maxY > 1 })?
+                .0 {
+                self.topVisibleMessageID = anchorID
+            } else if let firstMessageID = self.viewModel.messages.first?.id {
+                self.topVisibleMessageID = firstMessageID
+            }
+        }
+    }
+}
+
+private struct ChatScrollFrameReader: View {
+    let id: String
+    let coordinateSpaceName: String
+
+    var body: some View {
+        GeometryReader { geometry in
+            Color.clear.preference(
+                key: ChatScrollFramePreferenceKey.self,
+                value: [id: geometry.frame(in: .named(coordinateSpaceName))]
+            )
+        }
+    }
+}
+
+private struct ChatScrollFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
+private struct ChatScrollViewportHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -1074,6 +1215,7 @@ private struct CachedChatImageView: View {
                 placeholder
             }
         }
+        .aspectRatio(displayAspectRatio, contentMode: .fit)
         .task(id: cacheTaskID) {
             await loadImageIfNeeded()
         }
@@ -1108,6 +1250,18 @@ private struct CachedChatImageView: View {
             return "图片不可用"
         }
         return isLoading ? "图片加载中..." : "准备图片..."
+    }
+
+    private var displayAspectRatio: CGFloat {
+        if let cachedImage {
+            let width = cachedImage.size.width
+            let height = cachedImage.size.height
+            if width > 0, height > 0 {
+                return width / height
+            }
+        }
+
+        return message.content.isSticker ? 1 : (4 / 3)
     }
 
     @MainActor

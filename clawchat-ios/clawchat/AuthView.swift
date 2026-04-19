@@ -8,10 +8,30 @@ class AuthViewModel: ObservableObject {
     @Published var password = ""
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published var fieldErrors: [String: String] = [:]
 
     private var cancellables = Set<AnyCancellable>()
 
+    func validateLogin() -> Bool {
+        fieldErrors = [:]
+        var isValid = true
+        
+        if identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fieldErrors["identifier"] = "Username or email is required"
+            isValid = false
+        }
+        
+        if password.isEmpty {
+            fieldErrors["password"] = "Password is required"
+            isValid = false
+        }
+        
+        return isValid
+    }
+
     func login() {
+        guard validateLogin() else { return }
+        
         isLoading = true
         errorMessage = nil
 
@@ -27,7 +47,11 @@ class AuthViewModel: ObservableObject {
             .sink { completion in
                 self.isLoading = false
                 if case .failure(let error) = completion {
-                    self.errorMessage = error.localizedDescription
+                    if let apiError = error as? APIClient.APIError {
+                        self.errorMessage = apiError.errorDescription
+                    } else {
+                        self.errorMessage = error.localizedDescription
+                    }
                 }
             } receiveValue: { (payload: AuthPayload) in
                 AuthManager.shared.login(payload: payload)
@@ -36,7 +60,40 @@ class AuthViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
+    func validateRegister() -> Bool {
+        fieldErrors = [:]
+        var isValid = true
+        
+        if username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fieldErrors["username"] = "Username is required"
+            isValid = false
+        } else if username.count < 3 {
+            fieldErrors["username"] = "Username must be at least 3 characters"
+            isValid = false
+        }
+        
+        if email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fieldErrors["email"] = "Email is required"
+            isValid = false
+        } else if !email.contains("@") {
+            fieldErrors["email"] = "Invalid email format"
+            isValid = false
+        }
+        
+        if password.isEmpty {
+            fieldErrors["password"] = "Password is required"
+            isValid = false
+        } else if password.count < 8 {
+            fieldErrors["password"] = "Password must be at least 8 characters"
+            isValid = false
+        }
+        
+        return isValid
+    }
+
     func register() {
+        guard validateRegister() else { return }
+        
         isLoading = true
         errorMessage = nil
 
@@ -48,7 +105,11 @@ class AuthViewModel: ObservableObject {
             .sink { completion in
                 self.isLoading = false
                 if case .failure(let error) = completion {
-                    self.errorMessage = error.localizedDescription
+                    if let apiError = error as? APIClient.APIError {
+                        self.errorMessage = apiError.errorDescription
+                    } else {
+                        self.errorMessage = error.localizedDescription
+                    }
                 }
             } receiveValue: { (payload: AuthPayload) in
                 AuthManager.shared.login(payload: payload)
@@ -67,71 +128,120 @@ struct LoginView: View {
             ZStack {
                 FrostedBackground()
 
-                VStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Welcome Back")
-                            .font(.system(size: 34, weight: .bold))
-                            .foregroundStyle(Color.rcmsTextStrong)
-                        Text("Sign in to continue to Bot Chat")
-                            .font(.subheadline)
-                            .foregroundStyle(Color.rcmsTextSecondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ScrollView {
+                    VStack(spacing: 32) {
+                        // Hero Section
+                        VStack(spacing: 16) {
+                            Image("AppLogo")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 100, height: 100)
+                                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                                .shadow(color: Color.black.opacity(0.1), radius: 20, y: 10)
+                                .padding(.top, 40)
 
-                    VStack(spacing: 12) {
-                        TextField("Username or Email", text: $viewModel.identifier)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                            .background(Color.white.opacity(0.8))
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .foregroundStyle(Color.rcmsTextPrimary)
-
-                        SecureField("Password", text: $viewModel.password)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                            .background(Color.white.opacity(0.8))
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .foregroundStyle(Color.rcmsTextPrimary)
-
-                        if let error = viewModel.errorMessage {
-                            Text(error)
-                                .font(.caption)
-                                .foregroundStyle(Color.rcmsDanger)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            VStack(spacing: 8) {
+                                Text("Welcome Back")
+                                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.rcmsTextStrong)
+                                Text("Sign in to continue to Bot Chat")
+                                    .font(.subheadline)
+                                    .foregroundStyle(Color.rcmsTextSecondary)
+                            }
                         }
 
-                        Button(action: viewModel.login) {
-                            Group {
-                                if viewModel.isLoading {
-                                    ProgressView().tint(.white)
-                                } else {
-                                    Text("Login")
-                                        .fontWeight(.semibold)
+                        // Form Section
+                        VStack(spacing: 20) {
+                            VStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    TextField("Username or Email", text: $viewModel.identifier)
+                                        .textInputAutocapitalization(.never)
+                                        .autocorrectionDisabled(true)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 14)
+                                        .background(Color.white.opacity(0.9))
+                                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(viewModel.fieldErrors["identifier"] != nil ? Color.rcmsDanger.opacity(0.5) : Color.black.opacity(0.05), lineWidth: 1))
+                                        .foregroundStyle(Color.rcmsTextPrimary)
+                                    
+                                    if let fieldError = viewModel.fieldErrors["identifier"] {
+                                        Text(fieldError)
+                                            .font(.caption2)
+                                            .foregroundStyle(Color.rcmsDanger)
+                                            .padding(.horizontal, 4)
+                                    }
+                                }
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    SecureField("Password", text: $viewModel.password)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 14)
+                                        .background(Color.white.opacity(0.9))
+                                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(viewModel.fieldErrors["password"] != nil ? Color.rcmsDanger.opacity(0.5) : Color.black.opacity(0.05), lineWidth: 1))
+                                        .foregroundStyle(Color.rcmsTextPrimary)
+                                    
+                                    if let fieldError = viewModel.fieldErrors["password"] {
+                                        Text(fieldError)
+                                            .font(.caption2)
+                                            .foregroundStyle(Color.rcmsDanger)
+                                            .padding(.horizontal, 4)
+                                    }
                                 }
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 13)
-                            .background(Color.rcmsAccent)
-                            .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                            if let error = viewModel.errorMessage {
+                                HStack {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.caption)
+                                    Text(error)
+                                        .font(.caption)
+                                }
+                                .foregroundStyle(Color.rcmsDanger)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                                .background(Color.rcmsDanger.opacity(0.1))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+
+                            Button(action: viewModel.login) {
+                                Group {
+                                    if viewModel.isLoading {
+                                        ProgressView().tint(.white)
+                                    } else {
+                                        Text("Login")
+                                            .font(.headline)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(Color.rcmsAccent)
+                                .foregroundStyle(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .shadow(color: Color.rcmsAccent.opacity(0.3), radius: 10, y: 5)
+                            }
+                            .disabled(viewModel.isLoading)
                         }
-                        .disabled(viewModel.isLoading)
-                    }
+                        .padding(24)
+                        .glassCardStyle()
+                        .padding(.horizontal, 20)
 
-                    NavigationLink(destination: RegisterView(), isActive: $isRegistering) { EmptyView() }
-                        .hidden()
-
-                    Button("Don't have an account? Register") {
-                        isRegistering = true
+                        // Footer Navigation
+                        NavigationLink(destination: RegisterView(), isActive: $isRegistering) { EmptyView() }.hidden()
+                        Button {
+                            isRegistering = true
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("Don't have an account?")
+                                    .foregroundStyle(Color.rcmsTextSecondary)
+                                Text("Register")
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(Color.rcmsAccent)
+                            }
+                            .font(.footnote)
+                        }
                     }
-                    .font(.footnote)
-                    .foregroundStyle(Color.rcmsAccent)
                 }
-                .padding(22)
-                .glassCardStyle()
-                .padding(.horizontal, 16)
             }
             .toolbar(.hidden, for: .navigationBar)
         }
@@ -140,63 +250,146 @@ struct LoginView: View {
 
 struct RegisterView: View {
     @StateObject private var viewModel = AuthViewModel()
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack {
             FrostedBackground()
 
-            VStack(spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Create Account")
-                        .font(.system(size: 34, weight: .bold))
-                        .foregroundStyle(Color.rcmsTextStrong)
-                    Text("Join Bot Chat and start messaging")
-                        .font(.subheadline)
-                        .foregroundStyle(Color.rcmsTextSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView {
+                VStack(spacing: 32) {
+                    // Hero Section
+                    VStack(spacing: 16) {
+                        Image("AppLogo")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 80, height: 80)
+                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                            .shadow(color: Color.black.opacity(0.1), radius: 15, y: 8)
+                            .padding(.top, 20)
 
-                Group {
-                    TextField("Username", text: $viewModel.username)
-                    TextField("Email", text: $viewModel.email)
-                        .keyboardType(.emailAddress)
-                    SecureField("Password", text: $viewModel.password)
-                }
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(Color.white.opacity(0.8))
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .foregroundStyle(Color.rcmsTextPrimary)
-
-                if let error = viewModel.errorMessage {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(Color.rcmsDanger)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                Button(action: viewModel.register) {
-                    Group {
-                        if viewModel.isLoading {
-                            ProgressView().tint(.white)
-                        } else {
-                            Text("Register")
-                                .fontWeight(.semibold)
+                        VStack(spacing: 8) {
+                            Text("Create Account")
+                                .font(.system(size: 32, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color.rcmsTextStrong)
+                            Text("Join Bot Chat and start messaging")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.rcmsTextSecondary)
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(Color.rcmsAccent)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                    // Form Section
+                    VStack(spacing: 20) {
+                        VStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                TextField("Username", text: $viewModel.username)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled(true)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 14)
+                                    .background(Color.white.opacity(0.9))
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(viewModel.fieldErrors["username"] != nil ? Color.rcmsDanger.opacity(0.5) : Color.black.opacity(0.05), lineWidth: 1))
+                                    .foregroundStyle(Color.rcmsTextPrimary)
+                                
+                                if let fieldError = viewModel.fieldErrors["username"] {
+                                    Text(fieldError)
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.rcmsDanger)
+                                        .padding(.horizontal, 4)
+                                }
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                TextField("Email", text: $viewModel.email)
+                                    .keyboardType(.emailAddress)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled(true)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 14)
+                                    .background(Color.white.opacity(0.9))
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(viewModel.fieldErrors["email"] != nil ? Color.rcmsDanger.opacity(0.5) : Color.black.opacity(0.05), lineWidth: 1))
+                                    .foregroundStyle(Color.rcmsTextPrimary)
+                                
+                                if let fieldError = viewModel.fieldErrors["email"] {
+                                    Text(fieldError)
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.rcmsDanger)
+                                        .padding(.horizontal, 4)
+                                }
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                SecureField("Password", text: $viewModel.password)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled(true)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 14)
+                                    .background(Color.white.opacity(0.9))
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(viewModel.fieldErrors["password"] != nil ? Color.rcmsDanger.opacity(0.5) : Color.black.opacity(0.05), lineWidth: 1))
+                                    .foregroundStyle(Color.rcmsTextPrimary)
+                                
+                                if let fieldError = viewModel.fieldErrors["password"] {
+                                    Text(fieldError)
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.rcmsDanger)
+                                        .padding(.horizontal, 4)
+                                }
+                            }
+                        }
+
+                        if let error = viewModel.errorMessage {
+                            HStack {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.caption)
+                                Text(error)
+                                    .font(.caption)
+                            }
+                            .foregroundStyle(Color.rcmsDanger)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(Color.rcmsDanger.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+
+                        Button(action: viewModel.register) {
+                            Group {
+                                if viewModel.isLoading {
+                                    ProgressView().tint(.white)
+                                } else {
+                                    Text("Register")
+                                        .font(.headline)
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(Color.rcmsAccent)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .shadow(color: Color.rcmsAccent.opacity(0.3), radius: 10, y: 5)
+                        }
+                        .disabled(viewModel.isLoading)
+                    }
+                    .padding(24)
+                    .glassCardStyle()
+                    .padding(.horizontal, 20)
+                    
+                    Button {
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Already have an account?")
+                                .foregroundStyle(Color.rcmsTextSecondary)
+                            Text("Sign in")
+                                .fontWeight(.bold)
+                                .foregroundStyle(Color.rcmsAccent)
+                        }
+                        .font(.footnote)
+                    }
                 }
-                .disabled(viewModel.isLoading)
             }
-            .padding(22)
-            .glassCardStyle()
-            .padding(.horizontal, 16)
         }
         .navigationBarTitleDisplayMode(.inline)
     }
