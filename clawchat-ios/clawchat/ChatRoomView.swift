@@ -225,7 +225,7 @@ class ChatRoomViewModel: ObservableObject {
     }
 
     @MainActor
-    func sendImage(item: PhotosPickerItem) async {
+    fileprivate func sendImage(item: PhotosPickerItem, mode: ImageSendMode) async {
         guard !isUploadingImage else { return }
         guard connectionState == .connected else {
             errorMessage = "当前连接不可用，暂时无法发送图片。"
@@ -236,7 +236,7 @@ class ChatRoomViewModel: ObservableObject {
         defer { isUploadingImage = false }
 
         do {
-            let preparedImage = try await normalizedUploadImage(from: item)
+            let preparedImage = try await normalizedUploadImage(from: item, mode: mode)
             let preparedUpload = try await APIClient.shared.prepareImageUpload(
                 fileName: preparedImage.fileName,
                 contentType: preparedImage.mimeType,
@@ -253,6 +253,7 @@ class ChatRoomViewModel: ObservableObject {
             }
 
             let asset = try await APIClient.shared.completeImageUpload(assetID: assetID, objectKey: objectKey)
+            _ = LocalImageStore.shared.cacheImageData(preparedImage.data, for: asset, fallbackIdentifier: preparedImage.fileName)
             let caption = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
             let outgoingContent = RealtimeContentPayload(
                 type: "image",
@@ -278,7 +279,7 @@ class ChatRoomViewModel: ObservableObject {
         }
     }
 
-    private func normalizedUploadImage(from item: PhotosPickerItem) async throws -> UploadImagePayload {
+    private func normalizedUploadImage(from item: PhotosPickerItem, mode: ImageSendMode) async throws -> UploadImagePayload {
         guard let rawData = try await item.loadTransferable(type: Data.self), !rawData.isEmpty else {
             throw ChatImageError.unreadableImage
         }
@@ -286,16 +287,60 @@ class ChatRoomViewModel: ObservableObject {
         let preferredType = item.supportedContentTypes.first(where: { $0.conforms(to: .image) })
         let preferredMimeType = preferredType?.preferredMIMEType?.lowercased()
 
-        if let preferredMimeType, Self.supportedImageMimeTypes.contains(preferredMimeType) {
-            let fileExtension = preferredType?.preferredFilenameExtension ?? fileExtension(for: preferredMimeType)
-            return UploadImagePayload(
+        if mode == .original,
+           let preferredMimeType,
+           Self.supportedImageMimeTypes.contains(preferredMimeType) {
+            return originalUploadImagePayload(
                 data: rawData,
-                fileName: "image-\(UUID().uuidString.lowercased()).\(fileExtension)",
+                preferredType: preferredType,
                 mimeType: preferredMimeType
             )
         }
 
-        guard let image = UIImage(data: rawData), let jpegData = image.jpegData(compressionQuality: 0.9) else {
+        if mode == .compressed, preferredMimeType == "image/gif" {
+            return originalUploadImagePayload(
+                data: rawData,
+                preferredType: preferredType,
+                mimeType: "image/gif"
+            )
+        }
+
+        guard let image = UIImage(data: rawData) else {
+            throw ChatImageError.unsupportedImage
+        }
+
+        let jpegQuality = mode == .compressed ? Self.compressedJPEGQuality : Self.originalFallbackJPEGQuality
+        let maxPixelSize = mode == .compressed ? Self.compressedMaxPixelSize : nil
+
+        return try jpegUploadImagePayload(
+            from: image,
+            quality: jpegQuality,
+            maxPixelSize: maxPixelSize
+        )
+    }
+
+    private func originalUploadImagePayload(data: Data, preferredType: UTType?, mimeType: String) -> UploadImagePayload {
+        let fileExtension = preferredType?.preferredFilenameExtension ?? fileExtension(for: mimeType)
+        return UploadImagePayload(
+            data: data,
+            fileName: "image-\(UUID().uuidString.lowercased()).\(fileExtension)",
+            mimeType: mimeType
+        )
+    }
+
+    private func jpegUploadImagePayload(from image: UIImage, quality: CGFloat, maxPixelSize: CGFloat?) throws -> UploadImagePayload {
+        let normalizedImage = normalizedJPEGSourceImage(from: image, maxPixelSize: maxPixelSize)
+        let renderFormat = UIGraphicsImageRendererFormat.default()
+        renderFormat.scale = 1
+
+        let renderer = UIGraphicsImageRenderer(size: normalizedImage.size, format: renderFormat)
+        let flattenedImage = renderer.image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: normalizedImage.size))
+            normalizedImage.draw(in: CGRect(origin: .zero, size: normalizedImage.size))
+        }
+
+        guard let jpegData = flattenedImage.jpegData(compressionQuality: quality) else {
             throw ChatImageError.unsupportedImage
         }
 
@@ -304,6 +349,30 @@ class ChatRoomViewModel: ObservableObject {
             fileName: "image-\(UUID().uuidString.lowercased()).jpg",
             mimeType: "image/jpeg"
         )
+    }
+
+    private func normalizedJPEGSourceImage(from image: UIImage, maxPixelSize: CGFloat?) -> UIImage {
+        guard let maxPixelSize else {
+            return image
+        }
+
+        let longestEdge = max(image.size.width, image.size.height)
+        guard longestEdge > maxPixelSize, longestEdge > 0 else {
+            return image
+        }
+
+        let scaleRatio = maxPixelSize / longestEdge
+        let targetSize = CGSize(
+            width: max(1, floor(image.size.width * scaleRatio)),
+            height: max(1, floor(image.size.height * scaleRatio))
+        )
+
+        let renderFormat = UIGraphicsImageRendererFormat.default()
+        renderFormat.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: renderFormat)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
     }
 
     private func fileExtension(for mimeType: String) -> String {
@@ -325,12 +394,53 @@ class ChatRoomViewModel: ObservableObject {
         "image/webp",
         "image/gif",
     ]
+
+    private static let compressedJPEGQuality: CGFloat = 0.72
+    private static let originalFallbackJPEGQuality: CGFloat = 0.95
+    private static let compressedMaxPixelSize: CGFloat = 2000
 }
 
 private struct UploadImagePayload {
     let data: Data
     let fileName: String
     let mimeType: String
+}
+
+private enum ImageSendMode: CaseIterable, Hashable {
+    case compressed
+    case original
+
+    var shortTitle: String {
+        switch self {
+        case .compressed:
+            return "压缩"
+        case .original:
+            return "原图"
+        }
+    }
+
+    var menuTitle: String {
+        switch self {
+        case .compressed:
+            return "压缩发送（默认）"
+        case .original:
+            return "原图发送"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .compressed:
+            return "arrow.down.circle"
+        case .original:
+            return "photo"
+        }
+    }
+}
+
+private struct PendingImageSelection: Identifiable {
+    let id = UUID()
+    let item: PhotosPickerItem
 }
 
 private enum ChatImageError: LocalizedError {
@@ -448,6 +558,8 @@ struct ChatRoomView: View {
     @ObservedObject private var authManager = AuthManager.shared
     @State private var showGroupSheet = false
     @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var previewMessage: Message?
+    @State private var pendingImageSelection: PendingImageSelection?
     private let bottomAnchorID = "chat-room-bottom-anchor"
 
     init(context: ChatContext) {
@@ -479,7 +591,8 @@ struct ChatRoomView: View {
                                 ChatBubbleRow(
                                     message: message,
                                     currentUserID: authManager.currentUser?.id.uuidString,
-                                    showsSenderInfo: context.isGroup
+                                    showsSenderInfo: context.isGroup,
+                                    onPreviewImage: { previewMessage = $0 }
                                 )
                                     .id(message.id)
                             }
@@ -537,14 +650,24 @@ struct ChatRoomView: View {
                     .presentationDetents([.fraction(0.65)])
             }
         }
-        .onChange(of: selectedPhotoItem) {
-            guard let selectedPhotoItem else { return }
-            Task {
-                await viewModel.sendImage(item: selectedPhotoItem)
-                await MainActor.run {
-                    self.selectedPhotoItem = nil
+        .fullScreenCover(item: $pendingImageSelection) { selection in
+            PendingImageSendScreen(
+                selection: selection,
+                isSending: viewModel.isUploadingImage,
+                onCancel: {
+                    pendingImageSelection = nil
+                },
+                onSend: { mode in
+                    let item = selection.item
+                    pendingImageSelection = nil
+                    Task {
+                        await viewModel.sendImage(item: item, mode: mode)
+                    }
                 }
-            }
+            )
+        }
+        .fullScreenCover(item: $previewMessage) { message in
+            ChatImagePreviewScreen(message: message)
         }
         .alert(
             "提示",
@@ -567,7 +690,7 @@ struct ChatRoomView: View {
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+            PhotosPicker(selection: photoPickerSelection, matching: .images) {
                 ZStack {
                     Circle()
                         .fill(Color.white.opacity(0.82))
@@ -608,6 +731,18 @@ struct ChatRoomView: View {
         .padding(.bottom, 10)
         .background(Color.white.opacity(0.72))
         .background(.ultraThinMaterial)
+    }
+
+    private var photoPickerSelection: Binding<PhotosPickerItem?> {
+        Binding(
+            get: { selectedPhotoItem },
+            set: { newValue in
+                selectedPhotoItem = newValue
+                guard let newValue else { return }
+                pendingImageSelection = PendingImageSelection(item: newValue)
+                selectedPhotoItem = nil
+            }
+        )
     }
 
     private func scrollToBottom(with proxy: ScrollViewProxy, animated: Bool = true) {
@@ -714,6 +849,7 @@ struct ChatBubbleRow: View {
     let message: Message
     let currentUserID: String?
     let showsSenderInfo: Bool
+    let onPreviewImage: ((Message) -> Void)?
 
     private var messageTimestamp: String? {
         guard let date = message.displayDate else {
@@ -751,13 +887,6 @@ struct ChatBubbleRow: View {
 
     private var isImageMessage: Bool {
         normalizeIdentifier(message.content.type) == "image"
-    }
-
-    private var imageURL: URL? {
-        guard let imageURLString = message.content.imageURLString else {
-            return nil
-        }
-        return URL(string: imageURLString)
     }
 
     private var imageName: String {
@@ -887,33 +1016,7 @@ struct ChatBubbleRow: View {
 
     private var imageMessageView: some View {
         VStack(alignment: isMe ? .trailing : .leading, spacing: 8) {
-            Group {
-                if let imageURL {
-                    AsyncImage(url: imageURL, transaction: Transaction(animation: .easeInOut(duration: 0.2))) { phase in
-                        switch phase {
-                        case .empty:
-                            imagePlaceholder(label: "图片加载中...")
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFit()
-                        case .failure:
-                            imagePlaceholder(label: "图片不可用")
-                        @unknown default:
-                            imagePlaceholder(label: "图片不可用")
-                        }
-                    }
-                } else {
-                    imagePlaceholder(label: "图片不可用")
-                }
-            }
-            .frame(maxWidth: message.content.isSticker ? 160 : 280, maxHeight: message.content.isSticker ? 160 : 320)
-            .clipShape(RoundedRectangle(cornerRadius: message.content.isSticker ? 18 : 20, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: message.content.isSticker ? 18 : 20, style: .continuous)
-                    .stroke(Color.white.opacity(isMe ? 0.2 : 0.65), lineWidth: message.content.isSticker ? 0 : 1)
-            )
-            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+            imageThumbnailView
 
             if let imageCaption {
                 MessageMarkdownView(text: imageCaption, isMe: isMe)
@@ -926,24 +1029,406 @@ struct ChatBubbleRow: View {
             }
         }
     }
+}
 
-    private func imagePlaceholder(label: String) -> some View {
+private extension ChatBubbleRow {
+    @ViewBuilder
+    var imageThumbnailView: some View {
+        let thumbnail = CachedChatImageView(message: message)
+            .frame(maxWidth: message.content.isSticker ? 160 : 280, maxHeight: message.content.isSticker ? 160 : 320)
+            .clipShape(RoundedRectangle(cornerRadius: message.content.isSticker ? 18 : 20, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: message.content.isSticker ? 18 : 20, style: .continuous)
+                    .stroke(Color.white.opacity(isMe ? 0.2 : 0.65), lineWidth: message.content.isSticker ? 0 : 1)
+            )
+            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+
+        if let onPreviewImage {
+            Button {
+                onPreviewImage(message)
+            } label: {
+                thumbnail
+            }
+            .buttonStyle(.plain)
+            .contentShape(RoundedRectangle(cornerRadius: message.content.isSticker ? 18 : 20, style: .continuous))
+        } else {
+            thumbnail
+        }
+    }
+}
+
+private struct CachedChatImageView: View {
+    let message: Message
+
+    @State private var cachedImage: UIImage?
+    @State private var isLoading = false
+    @State private var didFail = false
+
+    var body: some View {
+        Group {
+            if let cachedImage {
+                Image(uiImage: cachedImage)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                placeholder
+            }
+        }
+        .task(id: cacheTaskID) {
+            await loadImageIfNeeded()
+        }
+    }
+
+    private var cacheTaskID: String {
+        message.content.asset?.id ?? message.content.imageURLString ?? message.id
+    }
+
+    @ViewBuilder
+    private var placeholder: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(isMe ? Color.rcmsAccent.opacity(0.12) : Color.white.opacity(0.9))
+                .fill(Color.white.opacity(0.9))
 
             VStack(spacing: 8) {
                 Image(systemName: "photo")
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(Color.rcmsTextSecondary)
 
-                Text(label)
+                Text(placeholderLabel)
                     .font(.caption)
                     .foregroundStyle(Color.rcmsTextSecondary)
             }
             .padding(20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var placeholderLabel: String {
+        if didFail || message.content.imageURLString == nil {
+            return "图片不可用"
+        }
+        return isLoading ? "图片加载中..." : "准备图片..."
+    }
+
+    @MainActor
+    private func loadImageIfNeeded() async {
+        if cachedImage != nil { return }
+
+        if let cachedURL = LocalImageStore.shared.cachedFileURL(for: message),
+           let cachedImage = UIImage(contentsOfFile: cachedURL.path) {
+            self.cachedImage = cachedImage
+            return
+        }
+
+        isLoading = true
+        defer { isLoading = false }
+
+        guard let cachedURL = await LocalImageStore.shared.ensureCachedImage(for: message),
+              let cachedImage = UIImage(contentsOfFile: cachedURL.path)
+        else {
+            didFail = true
+            return
+        }
+
+        self.cachedImage = cachedImage
+        didFail = false
+    }
+}
+
+private struct PendingImageSendScreen: View {
+    let selection: PendingImageSelection
+    let isSending: Bool
+    let onCancel: () -> Void
+    let onSend: (ImageSendMode) -> Void
+
+    @State private var previewImage: UIImage?
+    @State private var originalSizeLabel: String?
+    @State private var loadFailed = false
+    @State private var sendMode: ImageSendMode = .compressed
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                HStack {
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(Circle())
+                    }
+
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+
+                Spacer()
+
+                Group {
+                    if let previewImage {
+                        Image(uiImage: previewImage)
+                            .resizable()
+                            .scaledToFit()
+                    } else {
+                        previewPlaceholder
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 20)
+
+                HStack(spacing: 14) {
+                    Button {
+                        sendMode = sendMode == .original ? .compressed : .original
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: sendMode == .original ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 18, weight: .medium))
+                            Text(originalOptionTitle)
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    Button {
+                        onSend(sendMode)
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isSending {
+                                ProgressView()
+                                    .tint(.white)
+                            }
+                            Text(isSending ? "发送中..." : "发送")
+                                .font(.headline)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 12)
+                        .background(Color.rcmsAccent)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSending || loadFailed)
+                    .opacity((isSending || loadFailed) ? 0.7 : 1)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 28)
+                .background(Color.black.opacity(0.88))
+            }
+        }
+        .task(id: selection.id) {
+            await loadPreview()
+        }
+    }
+
+    private var originalOptionTitle: String {
+        if let originalSizeLabel {
+            return "原图 \(originalSizeLabel)"
+        }
+        return "原图"
+    }
+
+    @ViewBuilder
+    private var previewPlaceholder: some View {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(Color.white.opacity(0.08))
+            .overlay {
+                VStack(spacing: 10) {
+                    if loadFailed {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                        Text("图片预览加载失败")
+                            .font(.body)
+                            .foregroundStyle(.white.opacity(0.9))
+                    } else {
+                        ProgressView()
+                            .tint(.white)
+                        Text("正在准备图片...")
+                            .font(.body)
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+                }
+                .padding(24)
+            }
+            .padding(.horizontal, 12)
+    }
+
+    @MainActor
+    private func loadPreview() async {
+        guard previewImage == nil else { return }
+
+        do {
+            guard let rawData = try await selection.item.loadTransferable(type: Data.self), !rawData.isEmpty else {
+                loadFailed = true
+                return
+            }
+
+            originalSizeLabel = ByteCountFormatter.string(fromByteCount: Int64(rawData.count), countStyle: .file)
+
+            if let image = UIImage(data: rawData) {
+                previewImage = image
+                loadFailed = false
+            } else {
+                loadFailed = true
+            }
+        } catch {
+            loadFailed = true
+        }
+    }
+}
+
+private struct ChatImagePreviewScreen: View {
+    let message: Message
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var zoomScale: CGFloat = 1
+    @State private var baseZoomScale: CGFloat = 1
+    @State private var contentOffset: CGSize = .zero
+    @State private var baseContentOffset: CGSize = .zero
+
+    private var imageName: String {
+        let directName = message.content.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let directName, !directName.isEmpty {
+            return directName
+        }
+
+        let assetName = message.content.asset?.fileName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let assetName, !assetName.isEmpty {
+            return assetName
+        }
+
+        return "图片"
+    }
+
+    private var imageCaption: String? {
+        guard let body = message.content.body?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty else {
+            return nil
+        }
+        guard !message.content.isSticker else { return nil }
+        guard body.lowercased() != imageName.lowercased() else { return nil }
+        return body
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                HStack {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 28, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.92))
+                    }
+
+                    Spacer()
+
+                    Text(imageName)
+                        .font(.headline)
+                        .foregroundStyle(.white.opacity(0.92))
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Color.clear.frame(width: 28, height: 28)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 10)
+
+                GeometryReader { proxy in
+                    CachedChatImageView(message: message)
+                        .frame(maxWidth: proxy.size.width, maxHeight: proxy.size.height)
+                        .scaleEffect(zoomScale)
+                        .offset(contentOffset)
+                        .animation(.easeOut(duration: 0.2), value: zoomScale)
+                        .animation(.easeOut(duration: 0.2), value: contentOffset)
+                        .gesture(dragGesture.simultaneously(with: magnificationGesture))
+                        .onTapGesture(count: 2) {
+                            toggleZoom()
+                        }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
+                if let imageCaption {
+                    Text(imageCaption)
+                        .font(.body)
+                        .foregroundStyle(.white.opacity(0.92))
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 24)
+                } else {
+                    Spacer(minLength: 24)
+                }
+            }
+        }
+        .statusBarHidden()
+    }
+
+    private var magnificationGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                let nextScale = max(1, min(4, baseZoomScale * value))
+                zoomScale = nextScale
+                if nextScale <= 1.02 {
+                    contentOffset = .zero
+                }
+            }
+            .onEnded { _ in
+                if zoomScale <= 1.02 {
+                    resetZoom()
+                } else {
+                    baseZoomScale = zoomScale
+                }
+            }
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard zoomScale > 1 else { return }
+                contentOffset = CGSize(
+                    width: baseContentOffset.width + value.translation.width,
+                    height: baseContentOffset.height + value.translation.height
+                )
+            }
+            .onEnded { _ in
+                guard zoomScale > 1 else {
+                    resetZoom()
+                    return
+                }
+                baseContentOffset = contentOffset
+            }
+    }
+
+    private func toggleZoom() {
+        if zoomScale > 1 {
+            resetZoom()
+        } else {
+            zoomScale = 2
+            baseZoomScale = 2
+        }
+    }
+
+    private func resetZoom() {
+        zoomScale = 1
+        baseZoomScale = 1
+        contentOffset = .zero
+        baseContentOffset = .zero
     }
 }
 
