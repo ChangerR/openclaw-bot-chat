@@ -25,12 +25,30 @@ class APIClient {
         return components.url
     }
 
-    enum APIError: Error {
+    enum APIError: LocalizedError {
         case invalidURL
         case noData
         case decodingError
         case serverError(String)
         case unauthorized
+        case networkError(Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidURL:
+                return "Invalid server URL"
+            case .noData:
+                return "No data received from server"
+            case .decodingError:
+                return "Failed to parse server response"
+            case .serverError(let message):
+                return message
+            case .unauthorized:
+                return "Session expired or invalid credentials"
+            case .networkError(let error):
+                return "Network error: \(error.localizedDescription)"
+            }
+        }
     }
 
     private static let decoder: JSONDecoder = {
@@ -80,9 +98,10 @@ class APIClient {
         }
 
         return session.dataTaskPublisher(for: request)
+            .mapError { APIError.networkError($0) }
             .tryMap { data, response -> Data in
                 guard let httpResponse = response as? HTTPURLResponse else {
-                    throw APIError.serverError("Invalid response")
+                    throw APIError.serverError("Invalid response from server")
                 }
 
                 if httpResponse.statusCode == 401 {
@@ -90,8 +109,13 @@ class APIClient {
                     throw APIError.unauthorized
                 }
 
-                guard (200...299).contains(httpResponse.statusCode) else {
-                    let errorMessage = String(data: data, encoding: .utf8) ?? "Server error"
+                if !(200...299).contains(httpResponse.statusCode) {
+                    // Try to parse error message from ApiResponse
+                    if let apiError = try? Self.decoder.decode(ApiResponse<EmptyResponse>.self, from: data) {
+                        throw APIError.serverError(apiError.message)
+                    }
+                    
+                    let errorMessage = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
                     throw APIError.serverError(errorMessage)
                 }
 
@@ -134,34 +158,45 @@ class APIClient {
             request.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw APIError.serverError("Invalid response")
-        }
-
-        if httpResponse.statusCode == 401 {
-            AuthManager.shared.logout()
-            throw APIError.unauthorized
-        }
-
-        guard (200...299).contains(httpResponse.statusCode) else {
-            let errorMessage = String(data: data, encoding: .utf8) ?? "Server error"
-            throw APIError.serverError(errorMessage)
-        }
-
-        let apiResponse = try Self.decoder.decode(ApiResponse<T>.self, from: data)
-        if apiResponse.code != 0 {
-            throw APIError.serverError(apiResponse.message)
-        }
-
-        guard let payload = apiResponse.data else {
-            if T.self == EmptyResponse.self {
-                return EmptyResponse() as! T
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw APIError.serverError("Invalid response from server")
             }
-            throw APIError.noData
-        }
 
-        return payload
+            if httpResponse.statusCode == 401 {
+                AuthManager.shared.logout()
+                throw APIError.unauthorized
+            }
+
+            if !(200...299).contains(httpResponse.statusCode) {
+                // Try to parse error message from ApiResponse
+                if let apiError = try? Self.decoder.decode(ApiResponse<EmptyResponse>.self, from: data) {
+                    throw APIError.serverError(apiError.message)
+                }
+                
+                let errorMessage = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
+                throw APIError.serverError(errorMessage)
+            }
+
+            let apiResponse = try Self.decoder.decode(ApiResponse<T>.self, from: data)
+            if apiResponse.code != 0 {
+                throw APIError.serverError(apiResponse.message)
+            }
+
+            guard let payload = apiResponse.data else {
+                if T.self == EmptyResponse.self {
+                    return EmptyResponse() as! T
+                }
+                throw APIError.noData
+            }
+
+            return payload
+        } catch let error as APIError {
+            throw error
+        } catch {
+            throw APIError.networkError(error)
+        }
     }
 
     func prepareImageUpload(fileName: String,

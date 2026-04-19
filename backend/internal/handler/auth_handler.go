@@ -71,6 +71,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			apiresponse.BadRequest(c, "username or email is required")
 		} else if errors.Is(err, service.ErrInvalidCredentials) {
 			apiresponse.Unauthorized(c, "invalid username or password")
+		} else if errors.Is(err, service.ErrUserBanned) {
+			apiresponse.Forbidden(c, err.Error())
 		} else {
 			apiresponse.InternalError(c, "failed to login: "+err.Error())
 		}
