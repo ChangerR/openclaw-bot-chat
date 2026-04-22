@@ -10,6 +10,7 @@
 		E1A302102F936513008C8A74 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = E1A3020F2F936513008C8A74 /* MarkdownUI */; };
 		E1A4A5F230C1AA1100A1B2C3 /* CocoaMQTT in Frameworks */ = {isa = PBXBuildFile; productRef = E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */; };
 		E1A4A5F430C1AA1100A1B2C4 /* CocoaMQTTWebSocket in Frameworks */ = {isa = PBXBuildFile; productRef = E1A4A5F330C1AA1100A1B2C4 /* CocoaMQTTWebSocket */; };
+		E1B0C0D130D3100000A1B2C3 /* HighlightSwift in Frameworks */ = {isa = PBXBuildFile; productRef = E1B0C0D030D3100000A1B2C3 /* HighlightSwift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -58,6 +59,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E1B0C0D130D3100000A1B2C3 /* HighlightSwift in Frameworks */,
 				E1A302102F936513008C8A74 /* MarkdownUI in Frameworks */,
 				E1A4A5F230C1AA1100A1B2C3 /* CocoaMQTT in Frameworks */,
 				E1A4A5F430C1AA1100A1B2C4 /* CocoaMQTTWebSocket in Frameworks */,
@@ -131,6 +133,7 @@
 			packageProductDependencies = (
 				E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */,
 				E1A4A5F330C1AA1100A1B2C4 /* CocoaMQTTWebSocket */,
+				E1B0C0D030D3100000A1B2C3 /* HighlightSwift */,
 				E1A3020F2F936513008C8A74 /* MarkdownUI */,
 			);
 			productName = clawchat;
@@ -217,6 +220,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */,
+				E1B0C0CF30D3100000A1B2C3 /* XCRemoteSwiftPackageReference "highlightswift" */,
 				E1A3020D2F936410008C8A74 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -622,6 +626,14 @@
 				minimumVersion = 2.1.6;
 			};
 		};
+		E1B0C0CF30D3100000A1B2C3 /* XCRemoteSwiftPackageReference "highlightswift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/appstefan/highlightswift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -639,6 +651,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */;
 			productName = CocoaMQTTWebSocket;
+		};
+		E1B0C0D030D3100000A1B2C3 /* HighlightSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1B0C0CF30D3100000A1B2C3 /* XCRemoteSwiftPackageReference "highlightswift" */;
+			productName = HighlightSwift;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
