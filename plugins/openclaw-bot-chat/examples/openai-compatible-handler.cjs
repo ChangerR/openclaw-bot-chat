@@ -14,6 +14,7 @@ const {
 const { createSessionState } = require("./openai-handler/session-state.cjs");
 const { createModelClient } = require("./openai-handler/model-client.cjs");
 const { createMcpRuntimeManager } = require("./openai-handler/mcp-runtime.cjs");
+const { createLocalToolRuntime } = require("./openai-handler/local-runtime.cjs");
 
 const DEFAULT_SYSTEM_PROMPT = [
   "You are OpenClaw Agent, a coding-focused assistant running inside OpenClaw Bot Chat.",
@@ -41,6 +42,24 @@ const TOOL_EDIT_ENABLED = readBooleanEnv("OPENAI_COMPAT_TOOL_EDIT_ENABLED", fals
 const TOOL_EDIT_ALLOWED_ROOTS = parseCsvEnv("OPENAI_COMPAT_TOOL_EDIT_ALLOWED_ROOTS")
   .map((item) => item.trim())
   .filter(Boolean);
+const FILESYSTEM_TOOLS_ENABLED = readBooleanEnv("OPENAI_COMPAT_FILESYSTEM_ENABLED", true);
+const FILESYSTEM_READ_ROOTS = parseCsvEnv("OPENAI_COMPAT_FS_ALLOWED_READ_ROOTS")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const FILESYSTEM_WRITE_ROOTS = parseCsvEnv("OPENAI_COMPAT_FS_ALLOWED_WRITE_ROOTS")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const FILESYSTEM_MAX_READ_BYTES = Math.max(1024, readInt("OPENAI_COMPAT_FS_MAX_READ_BYTES", 262144));
+const FILESYSTEM_MAX_WRITE_BYTES = Math.max(1024, readInt("OPENAI_COMPAT_FS_MAX_WRITE_BYTES", 262144));
+const FILESYSTEM_ALLOW_HIDDEN = readBooleanEnv("OPENAI_COMPAT_FS_ALLOW_HIDDEN", false);
+const FILESYSTEM_RG_MAX_MATCHES = Math.max(1, readInt("OPENAI_COMPAT_FS_RG_MAX_MATCHES", 300));
+const FILESYSTEM_RG_MAX_BYTES = Math.max(4096, readInt("OPENAI_COMPAT_FS_RG_MAX_BYTES", 262144));
+const BASH_ENABLED = readBooleanEnv("OPENAI_COMPAT_BASH_ENABLED", false);
+const BASH_ALLOWED_ROOTS = parseCsvEnv("OPENAI_COMPAT_BASH_ALLOWED_ROOTS")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const BASH_TIMEOUT_MS = Math.max(100, readInt("OPENAI_COMPAT_BASH_TIMEOUT_MS", 20000));
+const BASH_MAX_OUTPUT_CHARS = Math.max(512, readInt("OPENAI_COMPAT_BASH_MAX_OUTPUT_CHARS", 12000));
 
 const mcpManager = createMcpRuntimeManager({
   readString,
@@ -66,6 +85,28 @@ const mcpManager = createMcpRuntimeManager({
   totalBudgetMs: MCP_TOTAL_BUDGET_MS,
   fileEditEnabled: TOOL_EDIT_ENABLED,
   fileEditAllowedRoots: TOOL_EDIT_ALLOWED_ROOTS,
+});
+const localToolRuntime = createLocalToolRuntime({
+  enabled: FILESYSTEM_TOOLS_ENABLED,
+  readRoots: FILESYSTEM_READ_ROOTS,
+  writeRoots: FILESYSTEM_WRITE_ROOTS,
+  maxReadBytes: FILESYSTEM_MAX_READ_BYTES,
+  maxWriteBytes: FILESYSTEM_MAX_WRITE_BYTES,
+  allowHidden: FILESYSTEM_ALLOW_HIDDEN,
+  rgMaxMatches: FILESYSTEM_RG_MAX_MATCHES,
+  rgMaxBytes: FILESYSTEM_RG_MAX_BYTES,
+  bashEnabled: BASH_ENABLED,
+  bashAllowedRoots: BASH_ALLOWED_ROOTS,
+  bashTimeoutMs: BASH_TIMEOUT_MS,
+  bashMaxOutputChars: BASH_MAX_OUTPUT_CHARS,
+  maxToolsPerRequest: MCP_MAX_TOOLS_PER_REQUEST,
+  totalBudgetMs: MCP_TOTAL_BUDGET_MS,
+  toolTimeoutMs: MCP_TOOL_TIMEOUT_MS,
+  toolResultMaxChars: MCP_TOOL_RESULT_MAX_CHARS,
+  maxParallelTools: MCP_MAX_PARALLEL_TOOLS,
+  serializeError,
+  truncateText,
+  debugLog,
 });
 
 const sessionState = createSessionState({
@@ -153,7 +194,7 @@ exports.respond = async function respond(request) {
         "- /memory：查看记忆便签",
         "- /memory + 文本：添加记忆便签",
         "- /memory clear：清空记忆便签",
-        "- /tools：查看当前可用 MCP 工具",
+        "- /tools：查看当前可用工具（MCP + 本地文件系统/rg/编辑工具）",
       ].join("\n"),
       metadata: { content_type: "text" },
     };
@@ -185,12 +226,14 @@ exports.respond = async function respond(request) {
   const apiKey = requiredEnv("OPENAI_COMPAT_API_KEY");
   const model = process.env.OPENAI_COMPAT_MODEL || "gpt-4o-mini";
   const mcpRuntime = await mcpManager.getRuntime();
+  const localRuntime = await localToolRuntime.getRuntime();
+  const combinedRuntime = combineRuntime(localRuntime, mcpRuntime);
 
   if (content === "/tools") {
-    const toolNames = mcpRuntime && mcpRuntime.tools.length > 0
-      ? mcpRuntime.tools.map((item) => `- ${item.function.name}`).join("\n")
+    const toolNames = combinedRuntime.tools.length > 0
+      ? combinedRuntime.tools.map((item) => `- ${item.function.name}`).join("\n")
       : "- (none)";
-    return { content: `当前可用 MCP 工具：\n${toolNames}`, metadata: { content_type: "text" } };
+    return { content: `当前可用工具：\n${toolNames}`, metadata: { content_type: "text" } };
   }
 
   const requestState = buildRequestState({
@@ -199,6 +242,7 @@ exports.respond = async function respond(request) {
     content,
     metadata,
     mcpRuntime,
+    localRuntime,
   });
 
   const text = await runModelLoop({
@@ -207,6 +251,7 @@ exports.respond = async function respond(request) {
     model,
     requestState,
     mcpRuntime,
+    localRuntime,
     timeoutMs: readInt("OPENAI_COMPAT_TIMEOUT_MS", 60000),
     logBase,
     startedAt,
@@ -218,11 +263,13 @@ exports.respond = async function respond(request) {
 };
 
 async function runModelLoop(options) {
-  const { endpoint, apiKey, model, requestState, mcpRuntime, timeoutMs, logBase, startedAt } = options;
+  const { endpoint, apiKey, model, requestState, mcpRuntime, localRuntime, timeoutMs, logBase, startedAt } = options;
   const toolBudget = mcpManager.createToolBudget();
+  const localToolBudget = localToolRuntime.createToolBudget();
+  const combinedRuntime = combineRuntime(localRuntime, mcpRuntime);
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
-    const payload = modelClient.buildPayload(model, requestState.messages, mcpRuntime);
+    const payload = modelClient.buildPayload(model, requestState.messages, combinedRuntime);
     const { response, parsed, rawText } = await modelClient.requestModelWithRetry({
       endpoint,
       apiKey,
@@ -242,9 +289,15 @@ async function runModelLoop(options) {
       throw new Error("OpenAI-compatible response did not contain assistant message");
     }
 
-    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0 && mcpRuntime) {
+    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
       requestState.messages.push(assistantMessage.raw);
-      const toolResults = await mcpManager.callToolsRound(mcpRuntime, assistantMessage.tool_calls, toolBudget);
+      const toolResults = await executeToolCalls({
+        toolCalls: assistantMessage.tool_calls,
+        mcpRuntime,
+        mcpBudget: toolBudget,
+        localRuntime,
+        localBudget: localToolBudget,
+      });
       for (const result of toolResults) {
         requestState.messages.push({ role: "tool", tool_call_id: result.tool_call_id, content: result.content });
       }
@@ -271,12 +324,15 @@ async function runModelLoop(options) {
 }
 
 function buildRequestState(options) {
-  const { systemPrompt, sessionId, content, metadata, mcpRuntime } = options;
+  const { systemPrompt, sessionId, content, metadata, mcpRuntime, localRuntime } = options;
   const metadataSummary = JSON.stringify(summarizeMetadata(metadata));
   const history = sessionState.buildHistoryWithSummary(sessionId);
   const memory = sessionState.getMemoryNotes(sessionId);
   const userContent = buildUserContent(content, metadata);
-  const capabilitySummary = mcpManager.summarizeCapabilities(mcpRuntime);
+  const capabilitySummary = JSON.stringify({
+    mcp: JSON.parse(mcpManager.summarizeCapabilities(mcpRuntime)),
+    local: JSON.parse(localToolRuntime.summarizeCapabilities(localRuntime)),
+  });
 
   return {
     messages: [
@@ -295,6 +351,38 @@ function buildRequestState(options) {
       { role: "user", content: userContent },
     ],
   };
+}
+
+function combineRuntime(localRuntime, mcpRuntime) {
+  return {
+    tools: [
+      ...(localRuntime && Array.isArray(localRuntime.tools) ? localRuntime.tools : []),
+      ...(mcpRuntime && Array.isArray(mcpRuntime.tools) ? mcpRuntime.tools : []),
+    ],
+  };
+}
+
+async function executeToolCalls(options) {
+  const { toolCalls, mcpRuntime, mcpBudget, localRuntime, localBudget } = options;
+  const outputs = [];
+  for (const toolCall of toolCalls) {
+    const toolName = toolCall && toolCall.function ? toolCall.function.name : undefined;
+    if (localToolRuntime.hasTool(localRuntime, toolName)) {
+      const result = await localToolRuntime.callToolsRound(localRuntime, [toolCall], localBudget);
+      outputs.push(...result);
+      continue;
+    }
+    if (mcpManager.hasTool(mcpRuntime, toolName)) {
+      const result = await mcpManager.callToolsRound(mcpRuntime, [toolCall], mcpBudget);
+      outputs.push(...result);
+      continue;
+    }
+    outputs.push({
+      tool_call_id: toolCall.id,
+      content: `Tool execution failed: unknown tool '${toolName || "<empty>"}'`,
+    });
+  }
+  return outputs;
 }
 
 function buildIntentHints(content) {
