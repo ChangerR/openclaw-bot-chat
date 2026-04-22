@@ -15,13 +15,14 @@ import (
 
 var (
 	ErrUserNotFound       = errors.New("user not found")
-	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrInvalidCredentials = errors.New("invalid username or password")
 	ErrMissingLoginIdentifier = errors.New("missing login identifier")
 	ErrUserAlreadyExists  = errors.New("user already exists")
 	ErrUsernameTaken      = errors.New("username already taken")
 	ErrEmailTaken         = errors.New("email already taken")
 	ErrIncorrectPassword  = errors.New("incorrect password")
 	ErrWeakPassword       = errors.New("new password does not meet policy")
+	ErrUserBanned         = errors.New("account has been suspended")
 )
 
 // AuthService handles authentication operations
@@ -149,7 +150,7 @@ func (s *AuthService) Login(ctx context.Context, req LoginRequest, ip, userAgent
 		return nil, nil, err
 	}
 	if user.Status == model.UserStatusBanned {
-		return nil, nil, ErrInvalidCredentials
+		return nil, nil, ErrUserBanned
 	}
 	if !password.Check(req.Password, user.PasswordHash) {
 		return nil, nil, ErrInvalidCredentials
