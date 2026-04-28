@@ -1,5 +1,19 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  BOT_CHAT_DEFAULT_ACCOUNT_ID,
+  type BotChatChannelConfig,
+  type BotChatConfigIssue,
+  type BotChatTarget,
+  type ResolvedBotChatAccount,
+} from "./channel-api.js";
+
+export type BotChatMessage = {
+  channelId: string;
+  userId: string;
+  text: string;
+  metadata?: Record<string, unknown>;
+};
 
 type RuntimeLogger = {
   info(msg: string, fields?: Record<string, unknown>): void;
@@ -9,12 +23,7 @@ type RuntimeLogger = {
 };
 
 interface RuntimeHooks {
-  emitMessage?: (message: {
-    channelId: string;
-    userId: string;
-    text: string;
-    metadata?: Record<string, unknown>;
-  }) => Promise<void>;
+  emitMessage?: (message: BotChatMessage) => Promise<void>;
 }
 
 interface BootstrapResponse {
@@ -45,18 +54,295 @@ export interface BotChatRuntime {
     hooks?: RuntimeHooks,
   ): Promise<void>;
   stop(): Promise<void>;
-  onInboundMessage(message: {
-    channelId: string;
-    userId: string;
-    text: string;
-    metadata?: Record<string, unknown>;
-  }): Promise<void>;
-  sendToChannel(message: {
-    channelId: string;
-    userId: string;
-    text: string;
-    metadata?: Record<string, unknown>;
-  }): Promise<void>;
+  onInboundMessage(message: BotChatMessage): Promise<void>;
+  sendToChannel(message: BotChatMessage): Promise<void>;
+}
+
+export function parseBotChatTarget(raw: string): BotChatTarget {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error("BotChat target is required");
+  }
+
+  const match = /^(dm|direct|user|channel|conversation):(.+)$/i.exec(trimmed);
+  if (!match) {
+    return { kind: "channel", id: trimmed, raw: trimmed };
+  }
+
+  const kind = match[1].toLowerCase();
+  const id = match[2].trim();
+  if (!id) {
+    throw new Error("BotChat target id is required");
+  }
+
+  if (kind === "dm" || kind === "direct" || kind === "user") {
+    return { kind: "direct", id, raw: trimmed };
+  }
+  return { kind: "channel", id, raw: trimmed };
+}
+
+export function normalizeBotChatTarget(raw: string): string {
+  const parsed = parseBotChatTarget(raw);
+  return `${parsed.kind === "direct" ? "dm" : "channel"}:${parsed.id}`;
+}
+
+export function inferBotChatTargetChatType(raw: string): "direct" | "channel" {
+  return parseBotChatTarget(raw).kind === "direct" ? "direct" : "channel";
+}
+
+export function buildBotChatOutboundMessageTarget(params: {
+  raw: string;
+  account: ResolvedBotChatAccount;
+  metadata?: Record<string, unknown>;
+}): { channelId: string; userId: string; normalizedTarget: string; chatType: "direct" | "channel" } {
+  const parsed = parseBotChatTarget(params.raw);
+  if (parsed.kind === "direct") {
+    return {
+      channelId: parsed.id,
+      userId: parsed.id,
+      normalizedTarget: `dm:${parsed.id}`,
+      chatType: "direct",
+    };
+  }
+
+  const userId = readString(params.metadata?.userId) ?? params.account.botId;
+  return {
+    channelId: parsed.id,
+    userId,
+    normalizedTarget: `channel:${parsed.id}`,
+    chatType: "channel",
+  };
+}
+
+export function normalizeAllowFromEntry(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed === "*") {
+    return "*";
+  }
+  return trimmed.replace(/^(?:user|botchat|sender):/i, "").trim();
+}
+
+export function normalizeAllowFromEntries(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.map((entry) => normalizeAllowFromEntry(String(entry))).filter(Boolean);
+}
+
+export function isBotChatSenderAllowed(params: {
+  allowFrom?: string[];
+  userId: string;
+}): boolean {
+  const normalizedUserId = normalizeAllowFromEntry(params.userId);
+  if (!normalizedUserId) {
+    return false;
+  }
+  const entries = (params.allowFrom ?? []).map((entry) => normalizeAllowFromEntry(entry));
+  if (entries.includes("*")) {
+    return true;
+  }
+  return entries.includes(normalizedUserId);
+}
+
+export function evaluateBotChatAccess(params: {
+  config: Record<string, unknown>;
+  message: BotChatMessage;
+}): { allowed: boolean; reason?: string; requiresCustomApproval: boolean } {
+  const normalized = normalizeBotChatConfig(params.config);
+  const allowFrom = normalized.allowFrom ?? [];
+  const allowlistEnabled = allowFrom.length > 0;
+  const senderAllowed = allowlistEnabled
+    ? isBotChatSenderAllowed({ allowFrom, userId: params.message.userId })
+    : true;
+
+  if (!senderAllowed) {
+    return {
+      allowed: false,
+      reason: "sender not approved in allowFrom",
+      requiresCustomApproval: false,
+    };
+  }
+
+  const blocked = Boolean(params.message.metadata?.blocked);
+  if (blocked) {
+    return {
+      allowed: false,
+      reason: "message blocked by metadata",
+      requiresCustomApproval: normalized.permissionApprovalEnabled === true,
+    };
+  }
+
+  return {
+    allowed: true,
+    requiresCustomApproval: false,
+  };
+}
+
+export function collectBotChatConfigIssues(config: Record<string, unknown>): BotChatConfigIssue[] {
+  const normalized = normalizeBotChatConfig(config, {});
+  const issues: BotChatConfigIssue[] = [];
+  const hasConfiguredBotKey = Boolean(normalized.botKey) || isBotChatSecretRef(config.botKey);
+
+  if (!normalized.backendUrl) {
+    issues.push({
+      severity: "error",
+      code: "missing_backend_url",
+      message: "backendUrl is required",
+      path: "backendUrl",
+    });
+  }
+  if (!hasConfiguredBotKey) {
+    issues.push({
+      severity: "error",
+      code: "missing_bot_key",
+      message: "botKey is required",
+      path: "botKey",
+    });
+  }
+
+  if (config.historyCatchupLimit !== undefined) {
+    const rawLimit = readNumber(config.historyCatchupLimit);
+    if (rawLimit === undefined || rawLimit <= 0) {
+      issues.push({
+        severity: "error",
+        code: "invalid_history_catchup_limit",
+        message: "historyCatchupLimit must be a positive number",
+        path: "historyCatchupLimit",
+      });
+    }
+  }
+
+  if (
+    normalized.permissionApprovalEnabled === true &&
+    !normalized.permissionApprovalHandler &&
+    !normalized.permissionApprovalUrl
+  ) {
+    issues.push({
+      severity: "warning",
+      code: "approval_without_handler",
+      message: "permissionApprovalEnabled is true but no approval handler or URL is configured",
+      path: "permissionApprovalEnabled",
+    });
+  }
+
+  if ((normalized.allowFrom ?? []).length === 0) {
+    issues.push({
+      severity: "warning",
+      code: "empty_allow_from",
+      message: "allowFrom is empty; BotChat currently allows all senders until pairing writes allowFrom entries",
+      path: "allowFrom",
+    });
+  }
+
+  return issues;
+}
+
+function isBotChatSecretRef(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    (value.source === "env" || value.source === "file" || value.source === "exec") &&
+    typeof value.provider === "string" &&
+    typeof value.id === "string"
+  );
+}
+
+export function normalizeBotChatConfig(
+  input: Record<string, unknown> = {},
+  env: Record<string, string | undefined> = process.env,
+): BotChatChannelConfig {
+  const normalized: BotChatChannelConfig = {
+    enabled: readBoolean(input.enabled) ?? true,
+    name: readString(input.name) ?? "BotChat",
+    backendUrl: readString(input.backendUrl) ?? env.BOT_CHAT_BACKEND_URL,
+    botKey: readString(input.botKey) ?? env.BOT_CHAT_BOT_KEY,
+    botId: readString(input.botId) ?? env.BOT_CHAT_BOT_ID ?? BOT_CHAT_DEFAULT_ACCOUNT_ID,
+    mqttTcpUrl: readString(input.mqttTcpUrl) ?? env.BOT_CHAT_MQTT_TCP_URL,
+    stateDir: readString(input.stateDir),
+    historyCatchupLimit: readNumber(input.historyCatchupLimit) ?? 100,
+    defaultTo: readString(input.defaultTo),
+    allowFrom: normalizeAllowFromEntries(input.allowFrom),
+    permissionApprovalEnabled: readBoolean(input.permissionApprovalEnabled) ?? false,
+    permissionApprovalHandler: readString(input.permissionApprovalHandler),
+    permissionApprovalUrl: readString(input.permissionApprovalUrl),
+    permissionApprovalTimeoutMs: readNumber(input.permissionApprovalTimeoutMs),
+    permissionDeniedReply: readString(input.permissionDeniedReply),
+  };
+
+  return normalized;
+}
+
+export function resolveBotChatAccount(
+  cfg: Record<string, unknown> = {},
+  accountId: string = BOT_CHAT_DEFAULT_ACCOUNT_ID,
+  env: Record<string, string | undefined> = process.env,
+): ResolvedBotChatAccount {
+  const channels = isRecord(cfg.channels) ? cfg.channels : undefined;
+  const channelCfg = isRecord(channels?.["bot-chat"])
+    ? (channels?.["bot-chat"] as Record<string, unknown>)
+    : cfg;
+  const normalized = normalizeBotChatConfig(channelCfg, env);
+  const configured = Boolean(normalized.backendUrl && normalized.botKey);
+  return {
+    accountId,
+    name: normalized.name ?? "BotChat",
+    enabled: normalized.enabled !== false,
+    configured,
+    backendUrl: normalized.backendUrl,
+    botId: normalized.botId ?? BOT_CHAT_DEFAULT_ACCOUNT_ID,
+    mqttTcpUrl: normalized.mqttTcpUrl,
+    config: normalized,
+  };
+}
+
+export function listBotChatAccountIds(_cfg: Record<string, unknown> = {}): string[] {
+  return [BOT_CHAT_DEFAULT_ACCOUNT_ID];
+}
+
+export function resolveDefaultBotChatAccountId(_cfg: Record<string, unknown> = {}): string {
+  return BOT_CHAT_DEFAULT_ACCOUNT_ID;
+}
+
+export function hasBotChatConfiguredState(params: {
+  cfg?: Record<string, unknown>;
+  env?: Record<string, string | undefined>;
+} = {}): boolean {
+  const account = resolveBotChatAccount(
+    params.cfg ?? {},
+    BOT_CHAT_DEFAULT_ACCOUNT_ID,
+    params.env ?? process.env,
+  );
+  return account.configured;
+}
+
+export function normalizeBotChatInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
+  return toInboundMessage(raw, topic);
+}
+
+export function buildBotChatStatePath(config: Record<string, unknown>): string | undefined {
+  const stateDir = readString(config.stateDir);
+  const botId = readString(config.botId) ?? BOT_CHAT_DEFAULT_ACCOUNT_ID;
+  if (!stateDir) {
+    return undefined;
+  }
+  return path.join(stateDir, `botchat-${botId}-state.json`);
+}
+
+export function buildBotChatOutboundPayload(message: BotChatMessage): string {
+  const threadId = readString(message.metadata?.threadId);
+  const replyToId = readString(message.metadata?.replyToId);
+  return JSON.stringify({
+    id: randomId(),
+    conversation_id: message.channelId,
+    ...(threadId ? { thread_id: threadId } : {}),
+    ...(replyToId ? { reply_to_id: replyToId } : {}),
+    from: { type: "bot", id: "openclaw" },
+    to: { type: "user", id: message.userId },
+    content: { type: "text", body: message.text, meta: message.metadata ?? {} },
+    timestamp: Math.floor(Date.now() / 1000),
+  });
 }
 
 class DefaultBotChatRuntime implements BotChatRuntime {
@@ -102,18 +388,15 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     this.qos = normalizeQos(bootstrap.broker?.qos);
     this.backendUrl = backendUrl;
     this.botKey = botKey;
-    const brokerUrl =
-      readString(config.mqttTcpUrl) ?? readString(bootstrap.broker?.tcp_url);
+    const brokerUrl = readString(config.mqttTcpUrl) ?? readString(bootstrap.broker?.tcp_url);
     if (!brokerUrl) {
       throw new Error("mqtt broker url is required");
     }
 
     this.publishTopic = readString(bootstrap.publish_topics?.[0]);
-    const subscriptions = readStringArray(
-      bootstrap.subscriptions?.map((item) => item.topic),
-    );
+    const subscriptions = readStringArray(bootstrap.subscriptions?.map((item) => item.topic));
 
-    this.statePath = buildStatePath(config);
+    this.statePath = buildBotChatStatePath(config);
     await this.loadState();
 
     const mqtt = await import("mqtt");
@@ -136,7 +419,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     });
 
     this.mqttClient.on("message", (topic, payload) => {
-      void this.handleInbound(topic, payload.toString("utf8"));
+      void this.handleInbound(topic, payload.toString("utf8"), config);
     });
 
     this.mqttClient.on("error", (error) => {
@@ -167,21 +450,11 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     this.logger?.info("botchat.runtime.stopped");
   }
 
-  async onInboundMessage(message: {
-    channelId: string;
-    userId: string;
-    text: string;
-    metadata?: Record<string, unknown>;
-  }): Promise<void> {
+  async onInboundMessage(message: BotChatMessage): Promise<void> {
     await this.hooks?.emitMessage?.(message);
   }
 
-  async sendToChannel(message: {
-    channelId: string;
-    userId: string;
-    text: string;
-    metadata?: Record<string, unknown>;
-  }): Promise<void> {
+  async sendToChannel(message: BotChatMessage): Promise<void> {
     if (!this.mqttClient) {
       throw new Error("mqtt client is not ready");
     }
@@ -191,23 +464,18 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       throw new Error("publish topic is not configured");
     }
 
-    const payload = JSON.stringify({
-      id: randomId(),
-      conversation_id: message.channelId,
-      from: { type: "bot", id: "openclaw" },
-      to: { type: "user", id: message.userId },
-      content: { type: "text", body: message.text, meta: message.metadata ?? {} },
-      timestamp: Math.floor(Date.now() / 1000),
-    });
-
-    this.mqttClient.publish(topic, payload, { qos: this.qos });
+    this.mqttClient.publish(topic, buildBotChatOutboundPayload(message), { qos: this.qos });
     this.logger?.debug?.("botchat.runtime.outbound", {
       topic,
       channelId: message.channelId,
     });
   }
 
-  private async handleInbound(topic: string, payload: string): Promise<void> {
+  private async handleInbound(
+    topic: string,
+    payload: string,
+    config: Record<string, unknown>,
+  ): Promise<void> {
     const logger = this.logger;
     if (!logger) {
       return;
@@ -220,34 +488,49 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       return;
     }
 
-    const permission = checkLocalPermission(message);
-    if (!permission.allowed) {
-      const approved = await this.approver?.approve({
-        topic,
-        message,
-        permission,
-      });
-      if (!approved?.approved) {
+    const access = evaluateBotChatAccess({ config, message });
+    if (!access.allowed) {
+      if (access.requiresCustomApproval) {
+        const approved = await this.approver?.approve({
+          topic,
+          message,
+          permission: { allowed: false, reason: access.reason },
+        });
+        if (approved?.approved) {
+          await this.acceptInboundMessage(message);
+          return;
+        }
         logger.warn("botchat.inbound.permission_denied", {
           topic,
-          reason: permission.reason,
+          reason: access.reason,
           approvalReason: approved?.reason,
         });
-        if (this.permissionDeniedReply) {
-          await this.sendToChannel({
-            channelId: message.channelId,
-            userId: message.userId,
-            text: this.permissionDeniedReply,
-            metadata: {
-              topic,
-              reason: permission.reason,
-            },
-          });
-        }
-        return;
+      } else {
+        logger.warn("botchat.inbound.allowlist_denied", {
+          topic,
+          reason: access.reason,
+          userId: message.userId,
+        });
       }
+
+      if (this.permissionDeniedReply) {
+        await this.sendToChannel({
+          channelId: message.channelId,
+          userId: message.userId,
+          text: this.permissionDeniedReply,
+          metadata: {
+            topic,
+            reason: access.reason,
+          },
+        });
+      }
+      return;
     }
 
+    await this.acceptInboundMessage(message);
+  }
+
+  private async acceptInboundMessage(message: BotChatMessage): Promise<void> {
     await this.onInboundMessage(message);
     const messageId = readString(message.metadata?.message_id);
     this.checkpoints.set(message.channelId, {
@@ -328,31 +611,12 @@ export function getBotChatRuntime(): BotChatRuntime {
   return runtimeInstance;
 }
 
-interface PermissionResult {
-  allowed: boolean;
-  reason?: string;
-}
-
 interface PermissionApprover {
   approve(request: {
     topic: string;
-    message: {
-      channelId: string;
-      userId: string;
-      text: string;
-      metadata?: Record<string, unknown>;
-    };
-    permission: PermissionResult;
+    message: BotChatMessage;
+    permission: { allowed: boolean; reason?: string };
   }): Promise<{ approved: boolean; reason?: string }>;
-}
-
-function checkLocalPermission(message: {
-  metadata?: Record<string, unknown>;
-}): PermissionResult {
-  const blocked = Boolean(message.metadata?.blocked);
-  return blocked
-    ? { allowed: false, reason: "message blocked by metadata" }
-    : { allowed: true };
 }
 
 async function createApprover(
@@ -411,27 +675,25 @@ async function bootstrapBot(
   return json.data ?? {};
 }
 
-function toInboundMessage(
-  raw: unknown,
-  topic: string,
-): {
-  channelId: string;
-  userId: string;
-  text: string;
-  metadata?: Record<string, unknown>;
-} | null {
+function toInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
   if (!isRecord(raw)) {
     return null;
   }
 
-  const channelId =
-    readString(raw.conversation_id) ?? readString(raw.dialog_id) ?? topic;
+  const channelId = readString(raw.conversation_id) ?? readString(raw.dialog_id) ?? topic;
   const from = isRecord(raw.from) ? raw.from : undefined;
   const content = isRecord(raw.content) ? raw.content : undefined;
+  const contentMeta = isRecord(content?.meta) ? content.meta : undefined;
   const messageId = readString(raw.id) ?? readString(raw.message_id);
   const seq = readNumber(raw.seq);
   const userId = readString(from?.id) ?? readString(raw.from_id);
   const text = readString(content?.body) ?? readString(raw.body);
+  const threadId =
+    readString(raw.thread_id) ?? readString(contentMeta?.threadId) ?? readString(contentMeta?.thread_id);
+  const replyToId =
+    readString(raw.reply_to_id) ??
+    readString(contentMeta?.replyToId) ??
+    readString(contentMeta?.reply_to_id);
 
   if (!userId || !text) {
     return null;
@@ -445,18 +707,11 @@ function toInboundMessage(
       topic,
       ...(messageId ? { message_id: messageId } : {}),
       ...(seq !== undefined ? { seq } : {}),
-      ...(isRecord(content?.meta) ? content.meta : {}),
+      ...(contentMeta ?? {}),
+      ...(threadId ? { threadId } : {}),
+      ...(replyToId ? { replyToId } : {}),
     },
   };
-}
-
-function buildStatePath(config: Record<string, unknown>): string | undefined {
-  const stateDir = readString(config.stateDir);
-  const botId = readString(config.botId) ?? "default";
-  if (!stateDir) {
-    return undefined;
-  }
-  return path.join(stateDir, `botchat-${botId}-state.json`);
 }
 
 async function fetchConversationMessages(
@@ -511,9 +766,7 @@ function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value
-    .map((item) => readString(item))
-    .filter((item): item is string => Boolean(item));
+  return value.map((item) => readString(item)).filter((item): item is string => Boolean(item));
 }
 
 function readNumber(value: unknown): number | undefined {
@@ -524,6 +777,22 @@ function readNumber(value: unknown): number | undefined {
     const parsed = Number(value);
     if (Number.isFinite(parsed)) {
       return parsed;
+    }
+  }
+  return undefined;
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off"].includes(normalized)) {
+      return false;
     }
   }
   return undefined;

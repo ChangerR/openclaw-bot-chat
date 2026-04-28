@@ -13,4 +13,12 @@ export default defineBundledChannelEntry({
     specifier: "./runtime-api.js",
     exportName: "setBotChatRuntime",
   },
+  secrets: {
+    specifier: "./secret-config-contract-api.js",
+    exportName: "botChatSecrets",
+  },
+  accountInspect: {
+    specifier: "./account-inspect-api.js",
+    exportName: "inspectBotChatReadOnlyAccount",
+  },
 });
