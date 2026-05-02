@@ -6,11 +6,15 @@ struct User: Codable, Identifiable {
     let id: UUID
     var username: String
     var email: String
+    var nickname: String?
+    var avatar: String?
+    var avatarUrl: String?
     var createdAt: Date?
     var updatedAt: Date?
 
     enum CodingKeys: String, CodingKey {
-        case id, username, email
+        case id, username, email, nickname, avatar
+        case avatarUrl = "avatar_url"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -37,6 +41,43 @@ struct Bot: Codable, Identifiable {
         case mqttTopic = "mqtt_topic"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+}
+
+// MARK: - Bot Management Requests & Responses
+
+struct UpdateBotRequest: Codable {
+    let name: String?
+    let description: String?
+}
+
+struct BotKeyResponse: Codable, Identifiable {
+    let id: UUID
+    var keyPrefix: String
+    var name: String?
+    var key: String? // Only present when creating a new key
+    var lastUsedAt: Date?
+    var lastUsedIp: String?
+    var expiresAt: Date?
+    var isActive: Bool
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, key
+        case keyPrefix = "key_prefix"
+        case lastUsedAt = "last_used_at"
+        case lastUsedIp = "last_used_ip"
+        case expiresAt = "expires_at"
+        case isActive = "is_active"
+    }
+}
+
+struct CreateKeyRequest: Codable {
+    let name: String?
+    let expiresAt: Int64?
+    
+    enum CodingKeys: String, CodingKey {
+        case name
+        case expiresAt = "expires_at"
     }
 }
 
@@ -543,4 +584,24 @@ struct AuthTokens: Codable {
 struct AuthPayload: Codable {
     let user: User
     let tokens: AuthTokens
+}
+
+struct UpdateProfileRequest: Codable {
+    let nickname: String?
+    let avatarUrl: String?
+
+    enum CodingKeys: String, CodingKey {
+        case nickname
+        case avatarUrl = "avatar_url"
+    }
+}
+
+struct ChangePasswordRequest: Codable {
+    let oldPassword: String
+    let newPassword: String
+
+    enum CodingKeys: String, CodingKey {
+        case oldPassword = "old_password"
+        case newPassword = "new_password"
+    }
 }
