@@ -38,6 +38,23 @@ const MCP_TOTAL_BUDGET_MS = Math.max(1000, readInt("OPENAI_COMPAT_MCP_TOTAL_BUDG
 const OPENAI_MAX_RETRIES = Math.max(0, readInt("OPENAI_COMPAT_MAX_RETRIES", 2));
 const OPENAI_RETRY_BACKOFF_MS = Math.max(100, readInt("OPENAI_COMPAT_RETRY_BACKOFF_MS", 1200));
 const MEMORY_MAX_NOTES = Math.max(1, readInt("OPENAI_COMPAT_MEMORY_MAX_NOTES", 24));
+const CONTEXT_COMPRESSION_ENABLED = readBooleanEnv("OPENAI_COMPAT_CONTEXT_COMPRESSION_ENABLED", true);
+const CONTEXT_COMPRESSION_MAX_ATTEMPTS = Math.max(1, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_MAX_ATTEMPTS", 3));
+const CONTEXT_COMPRESSION_TARGET_CHARS = Math.max(2000, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_TARGET_CHARS", 22000));
+const CONTEXT_COMPRESSION_RECENT_RATIO = Math.min(
+  0.9,
+  Math.max(0.2, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_RECENT_RATIO_PERCENT", 60) / 100),
+);
+const CONTEXT_COMPRESSION_SUMMARY_CHARS = Math.max(300, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_SUMMARY_CHARS", 1800));
+const CONTEXT_COMPRESSION_TOOL_CHARS = Math.max(200, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_TOOL_CHARS", 2200));
+const CONTEXT_WINDOW_CHARS = Math.max(
+  CONTEXT_COMPRESSION_TARGET_CHARS,
+  readInt("OPENAI_COMPAT_CONTEXT_WINDOW_CHARS", 32000),
+);
+const CONTEXT_COMPRESSION_TRIGGER_RATIO = Math.min(
+  0.99,
+  Math.max(0.5, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_TRIGGER_RATIO_PERCENT", 90) / 100),
+);
 const TOOL_EDIT_ENABLED = readBooleanEnv("OPENAI_COMPAT_TOOL_EDIT_ENABLED", false);
 const TOOL_EDIT_ALLOWED_ROOTS = parseCsvEnv("OPENAI_COMPAT_TOOL_EDIT_ALLOWED_ROOTS")
   .map((item) => item.trim())
@@ -267,8 +284,21 @@ async function runModelLoop(options) {
   const toolBudget = mcpManager.createToolBudget();
   const localToolBudget = localToolRuntime.createToolBudget();
   const combinedRuntime = combineRuntime(localRuntime, mcpRuntime);
+  let compressionAttempts = 0;
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
+    if (CONTEXT_COMPRESSION_ENABLED) {
+      const applied = tryCompressByWindowUsage({
+        requestState,
+        logBase,
+        round,
+        reason: "proactive_pre_request",
+      });
+      if (applied) {
+        compressionAttempts += 1;
+      }
+    }
+
     const payload = modelClient.buildPayload(model, requestState.messages, combinedRuntime);
     const { response, parsed, rawText } = await modelClient.requestModelWithRetry({
       endpoint,
@@ -281,6 +311,28 @@ async function runModelLoop(options) {
     });
 
     if (!response.ok) {
+      if (
+        CONTEXT_COMPRESSION_ENABLED &&
+        compressionAttempts < CONTEXT_COMPRESSION_MAX_ATTEMPTS &&
+        isContextOverflowError(response.status, parsed, rawText)
+      ) {
+        const beforeChars = estimateMessagesChars(requestState.messages);
+        requestState.messages = compressMessagesForContextWindow(requestState.messages);
+        const afterChars = estimateMessagesChars(requestState.messages);
+        compressionAttempts += 1;
+        debugLog("handler.context_compression.applied", {
+          ...logBase,
+          round,
+          compression_attempt: compressionAttempts,
+          status: response.status,
+          before_chars: beforeChars,
+          after_chars: afterChars,
+          trigger_ratio: CONTEXT_COMPRESSION_TRIGGER_RATIO,
+          response_preview: previewText(typeof rawText === "string" ? rawText : String(rawText || "")),
+        });
+        round -= 1;
+        continue;
+      }
       throw new Error(`OpenAI-compatible request failed with ${response.status}: ${rawText}`);
     }
 
@@ -300,6 +352,17 @@ async function runModelLoop(options) {
       });
       for (const result of toolResults) {
         requestState.messages.push({ role: "tool", tool_call_id: result.tool_call_id, content: result.content });
+      }
+      if (CONTEXT_COMPRESSION_ENABLED) {
+        const applied = tryCompressByWindowUsage({
+          requestState,
+          logBase,
+          round,
+          reason: "post_tool_calls",
+        });
+        if (applied) {
+          compressionAttempts += 1;
+        }
       }
       continue;
     }
@@ -321,6 +384,154 @@ async function runModelLoop(options) {
   }
 
   throw new Error(`MCP tool loop exceeded ${MAX_TOOL_ROUNDS} rounds`);
+}
+
+function isContextOverflowError(status, parsed, rawText) {
+  if (status !== 400 && status !== 413 && status !== 422) {
+    return false;
+  }
+  const raw = typeof rawText === "string" ? rawText : "";
+  const parsedText = safeJsonStringify(parsed) || "";
+  const combined = `${raw}\n${parsedText}`.toLowerCase();
+  return [
+    "maximum context length",
+    "context_length_exceeded",
+    "prompt is too long",
+    "too many tokens",
+    "token limit",
+    "reduce the length",
+    "max context",
+  ].some((pattern) => combined.includes(pattern));
+}
+
+function compressMessagesForContextWindow(messages) {
+  if (!Array.isArray(messages) || messages.length <= 2) {
+    return Array.isArray(messages) ? messages : [];
+  }
+
+  const systemMessage = messages[0] && messages[0].role === "system" ? messages[0] : null;
+  const body = systemMessage ? messages.slice(1) : messages.slice();
+
+  const recentCharBudget = Math.max(
+    800,
+    Math.floor(CONTEXT_COMPRESSION_TARGET_CHARS * CONTEXT_COMPRESSION_RECENT_RATIO),
+  );
+  let usedChars = 0;
+  const recent = [];
+  const archived = [];
+
+  for (let index = body.length - 1; index >= 0; index -= 1) {
+    const message = truncateMessageForCompression(body[index]);
+    const size = estimateSingleMessageChars(message);
+    if (usedChars + size <= recentCharBudget || recent.length === 0) {
+      recent.unshift(message);
+      usedChars += size;
+    } else {
+      archived.unshift(message);
+    }
+  }
+
+  const summary = summarizeArchivedMessages(archived);
+  const compressed = [];
+  if (systemMessage) {
+    compressed.push(systemMessage);
+  }
+  if (summary) {
+    compressed.push({
+      role: "system",
+      content: `Compressed earlier context:\n${summary}`,
+    });
+  }
+  compressed.push(...recent);
+
+  while (estimateMessagesChars(compressed) > CONTEXT_COMPRESSION_TARGET_CHARS && compressed.length > 2) {
+    const removableIndex = summary ? 2 : 1;
+    if (compressed.length <= removableIndex) {
+      break;
+    }
+    compressed.splice(removableIndex, 1);
+  }
+
+  return compressed;
+}
+
+function tryCompressByWindowUsage(options) {
+  const { requestState, logBase, round, reason } = options;
+  const beforeChars = estimateMessagesChars(requestState.messages);
+  const usageRatio = CONTEXT_WINDOW_CHARS > 0 ? beforeChars / CONTEXT_WINDOW_CHARS : 0;
+
+  if (usageRatio < CONTEXT_COMPRESSION_TRIGGER_RATIO) {
+    return false;
+  }
+
+  requestState.messages = compressMessagesForContextWindow(requestState.messages);
+  const afterChars = estimateMessagesChars(requestState.messages);
+  debugLog("handler.context_compression.proactive", {
+    ...logBase,
+    round,
+    reason,
+    before_chars: beforeChars,
+    after_chars: afterChars,
+    context_window_chars: CONTEXT_WINDOW_CHARS,
+    trigger_ratio: CONTEXT_COMPRESSION_TRIGGER_RATIO,
+    usage_ratio: Number(usageRatio.toFixed(4)),
+  });
+  return true;
+}
+
+function truncateMessageForCompression(message) {
+  if (!isRecord(message)) {
+    return message;
+  }
+  const role = readString(message.role);
+  if (role !== "tool" && role !== "assistant") {
+    return message;
+  }
+  const text = readContentText(message.content);
+  if (!text || text.length <= CONTEXT_COMPRESSION_TOOL_CHARS) {
+    return message;
+  }
+  return {
+    ...message,
+    content: truncateText(text, CONTEXT_COMPRESSION_TOOL_CHARS),
+  };
+}
+
+function summarizeArchivedMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return "";
+  }
+  const lines = messages
+    .map((message) => {
+      if (!isRecord(message)) {
+        return "";
+      }
+      const role = readString(message.role) || "unknown";
+      const text = previewText(readContentText(message.content)) || summarizeValue(message.content);
+      if (!text) {
+        return `${role}: (empty)`;
+      }
+      return `${role}: ${text}`;
+    })
+    .filter(Boolean);
+  return truncateText(lines.join("\n"), CONTEXT_COMPRESSION_SUMMARY_CHARS);
+}
+
+function estimateMessagesChars(messages) {
+  if (!Array.isArray(messages)) {
+    return 0;
+  }
+  return messages.reduce((sum, item) => sum + estimateSingleMessageChars(item), 0);
+}
+
+function estimateSingleMessageChars(message) {
+  if (!isRecord(message)) {
+    return 0;
+  }
+  const role = readString(message.role) || "";
+  const content = readContentText(message.content);
+  const toolCalls = Array.isArray(message.tool_calls) ? safeJsonStringify(message.tool_calls) : "";
+  return role.length + content.length + (toolCalls ? toolCalls.length : 0) + 32;
 }
 
 function buildRequestState(options) {
