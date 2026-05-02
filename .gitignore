@@ -10,6 +10,11 @@ Thumbs.db
 # Local tooling
 /.codex
 
+# Local agent screenshots
+/*_v*.png
+/screenshots/
+/artifacts/
+
 # Logs / runtime
 /logs/
 /run/
