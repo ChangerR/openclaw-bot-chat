@@ -265,11 +265,16 @@ function createMcpRuntimeManager(options) {
     });
   }
 
+  function hasTool(runtime, toolName) {
+    return Boolean(runtime && runtime.servers instanceof Map && runtime.servers.has(String(toolName || "")));
+  }
+
   return {
     getRuntime,
     createToolBudget,
     callToolsRound,
     summarizeCapabilities,
+    hasTool,
   };
 }
 

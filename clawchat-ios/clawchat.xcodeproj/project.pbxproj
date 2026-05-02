@@ -7,8 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E1A302102F936513008C8A74 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = E1A3020F2F936513008C8A74 /* MarkdownUI */; };
 		E1A4A5F230C1AA1100A1B2C3 /* CocoaMQTT in Frameworks */ = {isa = PBXBuildFile; productRef = E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */; };
 		E1A4A5F430C1AA1100A1B2C4 /* CocoaMQTTWebSocket in Frameworks */ = {isa = PBXBuildFile; productRef = E1A4A5F330C1AA1100A1B2C4 /* CocoaMQTTWebSocket */; };
+		E1B0C0D130D3100000A1B2C3 /* HighlightSwift in Frameworks */ = {isa = PBXBuildFile; productRef = E1B0C0D030D3100000A1B2C3 /* HighlightSwift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +59,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E1B0C0D130D3100000A1B2C3 /* HighlightSwift in Frameworks */,
+				E1A302102F936513008C8A74 /* MarkdownUI in Frameworks */,
 				E1A4A5F230C1AA1100A1B2C3 /* CocoaMQTT in Frameworks */,
 				E1A4A5F430C1AA1100A1B2C4 /* CocoaMQTTWebSocket in Frameworks */,
 			);
@@ -85,6 +89,7 @@
 				E196D9AD2F8BEE32001C6033 /* clawchat */,
 				E196D9BB2F8BEE35001C6033 /* clawchatTests */,
 				E196D9C52F8BEE35001C6033 /* clawchatUITests */,
+				E1A3020E2F936513008C8A74 /* Frameworks */,
 				E196D9AC2F8BEE32001C6033 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -97,6 +102,13 @@
 				E196D9C22F8BEE35001C6033 /* clawchatUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		E1A3020E2F936513008C8A74 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -121,6 +133,8 @@
 			packageProductDependencies = (
 				E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */,
 				E1A4A5F330C1AA1100A1B2C4 /* CocoaMQTTWebSocket */,
+				E1B0C0D030D3100000A1B2C3 /* HighlightSwift */,
+				E1A3020F2F936513008C8A74 /* MarkdownUI */,
 			);
 			productName = clawchat;
 			productReference = E196D9AB2F8BEE32001C6033 /* clawchat.app */;
@@ -204,13 +218,15 @@
 			);
 			mainGroup = E196D9A22F8BEE31001C6033;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */,
+				E1B0C0CF30D3100000A1B2C3 /* XCRemoteSwiftPackageReference "highlightswift" */,
+				E1A3020D2F936410008C8A74 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E196D9AC2F8BEE32001C6033 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			packageReferences = (
-				E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */,
-			);
 			targets = (
 				E196D9AA2F8BEE31001C6033 /* clawchat */,
 				E196D9B72F8BEE35001C6033 /* clawchatTests */,
@@ -279,30 +295,6 @@
 			targetProxy = E196D9C32F8BEE35001C6033 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/emqx/CocoaMQTT.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.1.6;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */;
-			productName = CocoaMQTT;
-		};
-		E1A4A5F330C1AA1100A1B2C4 /* CocoaMQTTWebSocket */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */;
-			productName = CocoaMQTTWebSocket;
-		};
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		E196D9CA2F8BEE35001C6033 /* Debug */ = {
@@ -616,6 +608,56 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		E1A3020D2F936410008C8A74 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.4.1;
+			};
+		};
+		E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/emqx/CocoaMQTT.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.1.6;
+			};
+		};
+		E1B0C0CF30D3100000A1B2C3 /* XCRemoteSwiftPackageReference "highlightswift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/appstefan/highlightswift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E1A3020F2F936513008C8A74 /* MarkdownUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1A3020D2F936410008C8A74 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
+			productName = MarkdownUI;
+		};
+		E1A4A5F130C1AA1100A1B2C3 /* CocoaMQTT */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */;
+			productName = CocoaMQTT;
+		};
+		E1A4A5F330C1AA1100A1B2C4 /* CocoaMQTTWebSocket */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1A4A5F030C1AA1100A1B2C3 /* XCRemoteSwiftPackageReference "CocoaMQTT" */;
+			productName = CocoaMQTTWebSocket;
+		};
+		E1B0C0D030D3100000A1B2C3 /* HighlightSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1B0C0CF30D3100000A1B2C3 /* XCRemoteSwiftPackageReference "highlightswift" */;
+			productName = HighlightSwift;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E196D9A32F8BEE31001C6033 /* Project object */;
 }

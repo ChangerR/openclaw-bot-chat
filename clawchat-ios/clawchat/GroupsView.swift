@@ -67,8 +67,7 @@ struct GroupsView: View {
         if let mqttTopic = group.mqttTopic, !mqttTopic.isEmpty {
             return mqttTopic
         }
-
-        return "chat/group/\(group.id.uuidString)"
+        return "chat/group/\(group.id.uuidString.lowercased())"
     }
 
     var body: some View {
@@ -89,7 +88,7 @@ struct GroupsView: View {
 
                         ForEach(filteredGroups) { group in
                             NavigationLink {
-                                ChatRoomView(context: .init(id: conversationTopic(for: group), title: group.name, subtitle: (group.isActive == true) ? "在线" : "离线", isGroup: true, groupId: group.id.uuidString))
+                                ChatRoomView(context: .init(id: conversationTopic(for: group), title: group.name, subtitle: (group.isActive == true) ? "在线" : "离线", isGroup: true, groupId: group.id.uuidString.lowercased()))
                             } label: {
                                 GroupRowCard(group: group)
                             }
@@ -103,6 +102,8 @@ struct GroupsView: View {
             }
             .navigationTitle("Groups")
             .navigationBarTitleDisplayMode(.large)
+            .toolbarColorScheme(.light, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 Button {
                     showingCreate = true

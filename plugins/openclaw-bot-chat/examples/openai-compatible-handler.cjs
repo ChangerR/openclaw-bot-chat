@@ -14,6 +14,7 @@ const {
 const { createSessionState } = require("./openai-handler/session-state.cjs");
 const { createModelClient } = require("./openai-handler/model-client.cjs");
 const { createMcpRuntimeManager } = require("./openai-handler/mcp-runtime.cjs");
+const { createLocalToolRuntime } = require("./openai-handler/local-runtime.cjs");
 
 const DEFAULT_SYSTEM_PROMPT = [
   "You are OpenClaw Agent, a coding-focused assistant running inside OpenClaw Bot Chat.",
@@ -37,10 +38,45 @@ const MCP_TOTAL_BUDGET_MS = Math.max(1000, readInt("OPENAI_COMPAT_MCP_TOTAL_BUDG
 const OPENAI_MAX_RETRIES = Math.max(0, readInt("OPENAI_COMPAT_MAX_RETRIES", 2));
 const OPENAI_RETRY_BACKOFF_MS = Math.max(100, readInt("OPENAI_COMPAT_RETRY_BACKOFF_MS", 1200));
 const MEMORY_MAX_NOTES = Math.max(1, readInt("OPENAI_COMPAT_MEMORY_MAX_NOTES", 24));
+const CONTEXT_COMPRESSION_ENABLED = readBooleanEnv("OPENAI_COMPAT_CONTEXT_COMPRESSION_ENABLED", true);
+const CONTEXT_COMPRESSION_MAX_ATTEMPTS = Math.max(1, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_MAX_ATTEMPTS", 3));
+const CONTEXT_COMPRESSION_TARGET_CHARS = Math.max(2000, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_TARGET_CHARS", 22000));
+const CONTEXT_COMPRESSION_RECENT_RATIO = Math.min(
+  0.9,
+  Math.max(0.2, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_RECENT_RATIO_PERCENT", 60) / 100),
+);
+const CONTEXT_COMPRESSION_SUMMARY_CHARS = Math.max(300, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_SUMMARY_CHARS", 1800));
+const CONTEXT_COMPRESSION_TOOL_CHARS = Math.max(200, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_TOOL_CHARS", 2200));
+const CONTEXT_WINDOW_CHARS = Math.max(
+  CONTEXT_COMPRESSION_TARGET_CHARS,
+  readInt("OPENAI_COMPAT_CONTEXT_WINDOW_CHARS", 32000),
+);
+const CONTEXT_COMPRESSION_TRIGGER_RATIO = Math.min(
+  0.99,
+  Math.max(0.5, readInt("OPENAI_COMPAT_CONTEXT_COMPRESSION_TRIGGER_RATIO_PERCENT", 90) / 100),
+);
 const TOOL_EDIT_ENABLED = readBooleanEnv("OPENAI_COMPAT_TOOL_EDIT_ENABLED", false);
 const TOOL_EDIT_ALLOWED_ROOTS = parseCsvEnv("OPENAI_COMPAT_TOOL_EDIT_ALLOWED_ROOTS")
   .map((item) => item.trim())
   .filter(Boolean);
+const FILESYSTEM_TOOLS_ENABLED = readBooleanEnv("OPENAI_COMPAT_FILESYSTEM_ENABLED", true);
+const FILESYSTEM_READ_ROOTS = parseCsvEnv("OPENAI_COMPAT_FS_ALLOWED_READ_ROOTS")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const FILESYSTEM_WRITE_ROOTS = parseCsvEnv("OPENAI_COMPAT_FS_ALLOWED_WRITE_ROOTS")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const FILESYSTEM_MAX_READ_BYTES = Math.max(1024, readInt("OPENAI_COMPAT_FS_MAX_READ_BYTES", 262144));
+const FILESYSTEM_MAX_WRITE_BYTES = Math.max(1024, readInt("OPENAI_COMPAT_FS_MAX_WRITE_BYTES", 262144));
+const FILESYSTEM_ALLOW_HIDDEN = readBooleanEnv("OPENAI_COMPAT_FS_ALLOW_HIDDEN", false);
+const FILESYSTEM_RG_MAX_MATCHES = Math.max(1, readInt("OPENAI_COMPAT_FS_RG_MAX_MATCHES", 300));
+const FILESYSTEM_RG_MAX_BYTES = Math.max(4096, readInt("OPENAI_COMPAT_FS_RG_MAX_BYTES", 262144));
+const BASH_ENABLED = readBooleanEnv("OPENAI_COMPAT_BASH_ENABLED", false);
+const BASH_ALLOWED_ROOTS = parseCsvEnv("OPENAI_COMPAT_BASH_ALLOWED_ROOTS")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const BASH_TIMEOUT_MS = Math.max(100, readInt("OPENAI_COMPAT_BASH_TIMEOUT_MS", 20000));
+const BASH_MAX_OUTPUT_CHARS = Math.max(512, readInt("OPENAI_COMPAT_BASH_MAX_OUTPUT_CHARS", 12000));
 
 const mcpManager = createMcpRuntimeManager({
   readString,
@@ -66,6 +102,28 @@ const mcpManager = createMcpRuntimeManager({
   totalBudgetMs: MCP_TOTAL_BUDGET_MS,
   fileEditEnabled: TOOL_EDIT_ENABLED,
   fileEditAllowedRoots: TOOL_EDIT_ALLOWED_ROOTS,
+});
+const localToolRuntime = createLocalToolRuntime({
+  enabled: FILESYSTEM_TOOLS_ENABLED,
+  readRoots: FILESYSTEM_READ_ROOTS,
+  writeRoots: FILESYSTEM_WRITE_ROOTS,
+  maxReadBytes: FILESYSTEM_MAX_READ_BYTES,
+  maxWriteBytes: FILESYSTEM_MAX_WRITE_BYTES,
+  allowHidden: FILESYSTEM_ALLOW_HIDDEN,
+  rgMaxMatches: FILESYSTEM_RG_MAX_MATCHES,
+  rgMaxBytes: FILESYSTEM_RG_MAX_BYTES,
+  bashEnabled: BASH_ENABLED,
+  bashAllowedRoots: BASH_ALLOWED_ROOTS,
+  bashTimeoutMs: BASH_TIMEOUT_MS,
+  bashMaxOutputChars: BASH_MAX_OUTPUT_CHARS,
+  maxToolsPerRequest: MCP_MAX_TOOLS_PER_REQUEST,
+  totalBudgetMs: MCP_TOTAL_BUDGET_MS,
+  toolTimeoutMs: MCP_TOOL_TIMEOUT_MS,
+  toolResultMaxChars: MCP_TOOL_RESULT_MAX_CHARS,
+  maxParallelTools: MCP_MAX_PARALLEL_TOOLS,
+  serializeError,
+  truncateText,
+  debugLog,
 });
 
 const sessionState = createSessionState({
@@ -153,7 +211,7 @@ exports.respond = async function respond(request) {
         "- /memory：查看记忆便签",
         "- /memory + 文本：添加记忆便签",
         "- /memory clear：清空记忆便签",
-        "- /tools：查看当前可用 MCP 工具",
+        "- /tools：查看当前可用工具（MCP + 本地文件系统/rg/编辑工具）",
       ].join("\n"),
       metadata: { content_type: "text" },
     };
@@ -185,12 +243,14 @@ exports.respond = async function respond(request) {
   const apiKey = requiredEnv("OPENAI_COMPAT_API_KEY");
   const model = process.env.OPENAI_COMPAT_MODEL || "gpt-4o-mini";
   const mcpRuntime = await mcpManager.getRuntime();
+  const localRuntime = await localToolRuntime.getRuntime();
+  const combinedRuntime = combineRuntime(localRuntime, mcpRuntime);
 
   if (content === "/tools") {
-    const toolNames = mcpRuntime && mcpRuntime.tools.length > 0
-      ? mcpRuntime.tools.map((item) => `- ${item.function.name}`).join("\n")
+    const toolNames = combinedRuntime.tools.length > 0
+      ? combinedRuntime.tools.map((item) => `- ${item.function.name}`).join("\n")
       : "- (none)";
-    return { content: `当前可用 MCP 工具：\n${toolNames}`, metadata: { content_type: "text" } };
+    return { content: `当前可用工具：\n${toolNames}`, metadata: { content_type: "text" } };
   }
 
   const requestState = buildRequestState({
@@ -199,6 +259,7 @@ exports.respond = async function respond(request) {
     content,
     metadata,
     mcpRuntime,
+    localRuntime,
   });
 
   const text = await runModelLoop({
@@ -207,6 +268,7 @@ exports.respond = async function respond(request) {
     model,
     requestState,
     mcpRuntime,
+    localRuntime,
     timeoutMs: readInt("OPENAI_COMPAT_TIMEOUT_MS", 60000),
     logBase,
     startedAt,
@@ -218,11 +280,26 @@ exports.respond = async function respond(request) {
 };
 
 async function runModelLoop(options) {
-  const { endpoint, apiKey, model, requestState, mcpRuntime, timeoutMs, logBase, startedAt } = options;
+  const { endpoint, apiKey, model, requestState, mcpRuntime, localRuntime, timeoutMs, logBase, startedAt } = options;
   const toolBudget = mcpManager.createToolBudget();
+  const localToolBudget = localToolRuntime.createToolBudget();
+  const combinedRuntime = combineRuntime(localRuntime, mcpRuntime);
+  let compressionAttempts = 0;
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
-    const payload = modelClient.buildPayload(model, requestState.messages, mcpRuntime);
+    if (CONTEXT_COMPRESSION_ENABLED) {
+      const applied = tryCompressByWindowUsage({
+        requestState,
+        logBase,
+        round,
+        reason: "proactive_pre_request",
+      });
+      if (applied) {
+        compressionAttempts += 1;
+      }
+    }
+
+    const payload = modelClient.buildPayload(model, requestState.messages, combinedRuntime);
     const { response, parsed, rawText } = await modelClient.requestModelWithRetry({
       endpoint,
       apiKey,
@@ -234,6 +311,28 @@ async function runModelLoop(options) {
     });
 
     if (!response.ok) {
+      if (
+        CONTEXT_COMPRESSION_ENABLED &&
+        compressionAttempts < CONTEXT_COMPRESSION_MAX_ATTEMPTS &&
+        isContextOverflowError(response.status, parsed, rawText)
+      ) {
+        const beforeChars = estimateMessagesChars(requestState.messages);
+        requestState.messages = compressMessagesForContextWindow(requestState.messages);
+        const afterChars = estimateMessagesChars(requestState.messages);
+        compressionAttempts += 1;
+        debugLog("handler.context_compression.applied", {
+          ...logBase,
+          round,
+          compression_attempt: compressionAttempts,
+          status: response.status,
+          before_chars: beforeChars,
+          after_chars: afterChars,
+          trigger_ratio: CONTEXT_COMPRESSION_TRIGGER_RATIO,
+          response_preview: previewText(typeof rawText === "string" ? rawText : String(rawText || "")),
+        });
+        round -= 1;
+        continue;
+      }
       throw new Error(`OpenAI-compatible request failed with ${response.status}: ${rawText}`);
     }
 
@@ -242,11 +341,28 @@ async function runModelLoop(options) {
       throw new Error("OpenAI-compatible response did not contain assistant message");
     }
 
-    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0 && mcpRuntime) {
+    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
       requestState.messages.push(assistantMessage.raw);
-      const toolResults = await mcpManager.callToolsRound(mcpRuntime, assistantMessage.tool_calls, toolBudget);
+      const toolResults = await executeToolCalls({
+        toolCalls: assistantMessage.tool_calls,
+        mcpRuntime,
+        mcpBudget: toolBudget,
+        localRuntime,
+        localBudget: localToolBudget,
+      });
       for (const result of toolResults) {
         requestState.messages.push({ role: "tool", tool_call_id: result.tool_call_id, content: result.content });
+      }
+      if (CONTEXT_COMPRESSION_ENABLED) {
+        const applied = tryCompressByWindowUsage({
+          requestState,
+          logBase,
+          round,
+          reason: "post_tool_calls",
+        });
+        if (applied) {
+          compressionAttempts += 1;
+        }
       }
       continue;
     }
@@ -270,13 +386,164 @@ async function runModelLoop(options) {
   throw new Error(`MCP tool loop exceeded ${MAX_TOOL_ROUNDS} rounds`);
 }
 
+function isContextOverflowError(status, parsed, rawText) {
+  if (status !== 400 && status !== 413 && status !== 422) {
+    return false;
+  }
+  const raw = typeof rawText === "string" ? rawText : "";
+  const parsedText = safeJsonStringify(parsed) || "";
+  const combined = `${raw}\n${parsedText}`.toLowerCase();
+  return [
+    "maximum context length",
+    "context_length_exceeded",
+    "prompt is too long",
+    "too many tokens",
+    "token limit",
+    "reduce the length",
+    "max context",
+  ].some((pattern) => combined.includes(pattern));
+}
+
+function compressMessagesForContextWindow(messages) {
+  if (!Array.isArray(messages) || messages.length <= 2) {
+    return Array.isArray(messages) ? messages : [];
+  }
+
+  const systemMessage = messages[0] && messages[0].role === "system" ? messages[0] : null;
+  const body = systemMessage ? messages.slice(1) : messages.slice();
+
+  const recentCharBudget = Math.max(
+    800,
+    Math.floor(CONTEXT_COMPRESSION_TARGET_CHARS * CONTEXT_COMPRESSION_RECENT_RATIO),
+  );
+  let usedChars = 0;
+  const recent = [];
+  const archived = [];
+
+  for (let index = body.length - 1; index >= 0; index -= 1) {
+    const message = truncateMessageForCompression(body[index]);
+    const size = estimateSingleMessageChars(message);
+    if (usedChars + size <= recentCharBudget || recent.length === 0) {
+      recent.unshift(message);
+      usedChars += size;
+    } else {
+      archived.unshift(message);
+    }
+  }
+
+  const summary = summarizeArchivedMessages(archived);
+  const compressed = [];
+  if (systemMessage) {
+    compressed.push(systemMessage);
+  }
+  if (summary) {
+    compressed.push({
+      role: "system",
+      content: `Compressed earlier context:\n${summary}`,
+    });
+  }
+  compressed.push(...recent);
+
+  while (estimateMessagesChars(compressed) > CONTEXT_COMPRESSION_TARGET_CHARS && compressed.length > 2) {
+    const removableIndex = summary ? 2 : 1;
+    if (compressed.length <= removableIndex) {
+      break;
+    }
+    compressed.splice(removableIndex, 1);
+  }
+
+  return compressed;
+}
+
+function tryCompressByWindowUsage(options) {
+  const { requestState, logBase, round, reason } = options;
+  const beforeChars = estimateMessagesChars(requestState.messages);
+  const usageRatio = CONTEXT_WINDOW_CHARS > 0 ? beforeChars / CONTEXT_WINDOW_CHARS : 0;
+
+  if (usageRatio < CONTEXT_COMPRESSION_TRIGGER_RATIO) {
+    return false;
+  }
+
+  requestState.messages = compressMessagesForContextWindow(requestState.messages);
+  const afterChars = estimateMessagesChars(requestState.messages);
+  debugLog("handler.context_compression.proactive", {
+    ...logBase,
+    round,
+    reason,
+    before_chars: beforeChars,
+    after_chars: afterChars,
+    context_window_chars: CONTEXT_WINDOW_CHARS,
+    trigger_ratio: CONTEXT_COMPRESSION_TRIGGER_RATIO,
+    usage_ratio: Number(usageRatio.toFixed(4)),
+  });
+  return true;
+}
+
+function truncateMessageForCompression(message) {
+  if (!isRecord(message)) {
+    return message;
+  }
+  const role = readString(message.role);
+  if (role !== "tool" && role !== "assistant") {
+    return message;
+  }
+  const text = readContentText(message.content);
+  if (!text || text.length <= CONTEXT_COMPRESSION_TOOL_CHARS) {
+    return message;
+  }
+  return {
+    ...message,
+    content: truncateText(text, CONTEXT_COMPRESSION_TOOL_CHARS),
+  };
+}
+
+function summarizeArchivedMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return "";
+  }
+  const lines = messages
+    .map((message) => {
+      if (!isRecord(message)) {
+        return "";
+      }
+      const role = readString(message.role) || "unknown";
+      const text = previewText(readContentText(message.content)) || summarizeValue(message.content);
+      if (!text) {
+        return `${role}: (empty)`;
+      }
+      return `${role}: ${text}`;
+    })
+    .filter(Boolean);
+  return truncateText(lines.join("\n"), CONTEXT_COMPRESSION_SUMMARY_CHARS);
+}
+
+function estimateMessagesChars(messages) {
+  if (!Array.isArray(messages)) {
+    return 0;
+  }
+  return messages.reduce((sum, item) => sum + estimateSingleMessageChars(item), 0);
+}
+
+function estimateSingleMessageChars(message) {
+  if (!isRecord(message)) {
+    return 0;
+  }
+  const role = readString(message.role) || "";
+  const content = readContentText(message.content);
+  const toolCalls = Array.isArray(message.tool_calls) ? safeJsonStringify(message.tool_calls) : "";
+  return role.length + content.length + (toolCalls ? toolCalls.length : 0) + 32;
+}
+
 function buildRequestState(options) {
-  const { systemPrompt, sessionId, content, metadata, mcpRuntime } = options;
+  const { systemPrompt, sessionId, content, metadata, mcpRuntime, localRuntime } = options;
   const metadataSummary = JSON.stringify(summarizeMetadata(metadata));
   const history = sessionState.buildHistoryWithSummary(sessionId);
   const memory = sessionState.getMemoryNotes(sessionId);
   const userContent = buildUserContent(content, metadata);
-  const capabilitySummary = mcpManager.summarizeCapabilities(mcpRuntime);
+  const capabilitySummary = JSON.stringify({
+    mcp: JSON.parse(mcpManager.summarizeCapabilities(mcpRuntime)),
+    local: JSON.parse(localToolRuntime.summarizeCapabilities(localRuntime)),
+  });
 
   return {
     messages: [
@@ -295,6 +562,38 @@ function buildRequestState(options) {
       { role: "user", content: userContent },
     ],
   };
+}
+
+function combineRuntime(localRuntime, mcpRuntime) {
+  return {
+    tools: [
+      ...(localRuntime && Array.isArray(localRuntime.tools) ? localRuntime.tools : []),
+      ...(mcpRuntime && Array.isArray(mcpRuntime.tools) ? mcpRuntime.tools : []),
+    ],
+  };
+}
+
+async function executeToolCalls(options) {
+  const { toolCalls, mcpRuntime, mcpBudget, localRuntime, localBudget } = options;
+  const outputs = [];
+  for (const toolCall of toolCalls) {
+    const toolName = toolCall && toolCall.function ? toolCall.function.name : undefined;
+    if (localToolRuntime.hasTool(localRuntime, toolName)) {
+      const result = await localToolRuntime.callToolsRound(localRuntime, [toolCall], localBudget);
+      outputs.push(...result);
+      continue;
+    }
+    if (mcpManager.hasTool(mcpRuntime, toolName)) {
+      const result = await mcpManager.callToolsRound(mcpRuntime, [toolCall], mcpBudget);
+      outputs.push(...result);
+      continue;
+    }
+    outputs.push({
+      tool_call_id: toolCall.id,
+      content: `Tool execution failed: unknown tool '${toolName || "<empty>"}'`,
+    });
+  }
+  return outputs;
 }
 
 function buildIntentHints(content) {

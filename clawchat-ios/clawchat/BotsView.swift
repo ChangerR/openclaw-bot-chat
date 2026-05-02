@@ -47,6 +47,7 @@ class BotsViewModel: ObservableObject {
 
 struct BotsView: View {
     @StateObject private var viewModel = BotsViewModel()
+    @ObservedObject private var authManager = AuthManager.shared
     @State private var showingCreate = false
     @State private var newName = ""
     @State private var newDescription = ""
@@ -68,11 +69,11 @@ struct BotsView: View {
             return mqttTopic
         }
 
-        guard let userID = AuthManager.shared.currentUser?.id.uuidString else {
+        guard let userID = authManager.currentUser?.id.uuidString.lowercased() else {
             return nil
         }
 
-        return "chat/dm/user/\(userID)/bot/\(bot.id.uuidString)"
+        return "chat/dm/user/\(userID)/bot/\(bot.id.uuidString.lowercased())"
     }
 
     var body: some View {
@@ -94,7 +95,7 @@ struct BotsView: View {
                         ForEach(filteredBots) { bot in
                             if let topic = conversationTopic(for: bot) {
                                 NavigationLink {
-                                    ChatRoomView(context: .init(id: topic, title: bot.name, subtitle: bot.status == "online" ? "在线" : "离线", isGroup: false, groupId: nil))
+                                    ChatRoomView(context: .init(id: topic, title: bot.name, subtitle: bot.status == "online" ? "在线" : "离线", isGroup: false, groupId: nil, bot: bot))
                                 } label: {
                                     BotRowCard(bot: bot)
                                 }
@@ -112,6 +113,8 @@ struct BotsView: View {
             }
             .navigationTitle("Bots")
             .navigationBarTitleDisplayMode(.large)
+            .toolbarColorScheme(.light, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 Button {
                     showingCreate = true
@@ -121,7 +124,10 @@ struct BotsView: View {
                         .foregroundStyle(Color.rcmsAccent)
                 }
             }
-            .onAppear { viewModel.fetchBots() }
+            .onAppear {
+                authManager.refreshCurrentUserIfNeeded()
+                viewModel.fetchBots()
+            }
             .refreshable { viewModel.fetchBots() }
             .sheet(isPresented: $showingCreate) {
                 createBotSheet
@@ -207,7 +213,8 @@ struct BotRowCard: View {
 
             Spacer()
         }
-        .frame(minHeight: 74)
+        .frame(maxWidth: .infinity, minHeight: 74, alignment: .leading)
+        .contentShape(Rectangle())
         .padding(.horizontal, 4)
         .padding(.vertical, 8)
         .background(Color.white.opacity(0.7))
