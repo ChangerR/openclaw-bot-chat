@@ -21,7 +21,7 @@ cat <<EOF
 
 Development mode is ready.
 Start frontend HMR:    ./scripts/dev-front.sh
-Backend health:        curl http://127.0.0.1:8080/health
+Backend health:        curl http://${BACKEND_BIND_HOST}:${BACKEND_BIND_PORT}/health
 Frontend via Nginx:    http://${DOMAIN}
 Frontend direct:       http://${FRONTEND_BIND_HOST}:${FRONTEND_BIND_PORT}
 Docker logs:           ./scripts/dev-logs.sh

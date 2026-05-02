@@ -1,7 +1,9 @@
 declare module "openclaw/plugin-sdk/channel-entry-contract" {
-  export function defineBundledChannelEntry<T>(entry: T): T;
-}
+  export function defineBundledChannelEntry<T>(entry: T): T & {
+    kind: "bundled-channel-entry";
+  };
 
-declare module "openclaw/plugin-sdk/setup-entry-contract" {
-  export function defineBundledSetupEntry<T>(entry: T): T;
+  export function defineBundledChannelSetupEntry<T>(entry: T): T & {
+    kind: "bundled-channel-setup-entry";
+  };
 }

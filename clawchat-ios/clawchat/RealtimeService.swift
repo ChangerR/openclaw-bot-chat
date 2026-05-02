@@ -84,7 +84,8 @@ class RealtimeService: NSObject, ObservableObject {
         mqttClient?.disconnect()
         mqttClient = nil
 
-        let isSecure = (url.scheme == "wss" || url.scheme == "https")
+        let secureSchemes = Set(["wss", "https"])
+        let isSecure = secureSchemes.contains((url.scheme ?? "").lowercased())
         let defaultPort = isSecure ? 443 : 80
         let port = url.port ?? defaultPort
 

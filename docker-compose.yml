@@ -5,8 +5,6 @@ services:
       POSTGRES_USER: ${DATABASE_USER:-postgres}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-postgres}
       POSTGRES_DB: ${DATABASE_DBNAME:-openclaw_bot_chat}
-    ports:
-      - "${POSTGRES_PORT_MAPPING:-5432:5432}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql

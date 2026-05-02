@@ -1,23 +1,64 @@
 {
-  "name": "@openclaw/extension-bot-chat",
-  "version": "0.1.0",
-  "description": "OpenClaw BotChat channel plugin",
-  "openclaw": {
-    "extensions": ["./index.ts"],
-    "setupEntry": "./setup-entry.ts",
-    "channel": {
-      "id": "bot-chat",
-      "label": "BotChat",
-      "selectionLabel": "BotChat (MQTT Bridge)",
-      "docsPath": "/channels/bot-chat",
-      "docsLabel": "bot-chat",
-      "blurb": "Bridge OpenClaw to BotChat backend and MQTT."
-    },
-    "compat": {
-      "pluginApi": ">=2026.4.8"
-    },
-    "build": {
-      "openclawVersion": "2026.4.8"
+  "id": "bot-chat",
+  "channels": ["bot-chat"],
+  "channelEnvVars": {
+    "bot-chat": [
+      "BOT_CHAT_BACKEND_URL",
+      "BOT_CHAT_BOT_KEY",
+      "BOT_CHAT_BOT_ID",
+      "BOT_CHAT_MQTT_TCP_URL"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "name": { "type": "string", "minLength": 1 },
+      "backendUrl": { "type": "string", "minLength": 1 },
+      "botKey": { "type": "string", "minLength": 1 },
+      "botId": { "type": "string", "minLength": 1 },
+      "mqttTcpUrl": { "type": "string", "minLength": 1 },
+      "stateDir": { "type": "string", "minLength": 1 },
+      "historyCatchupLimit": { "type": "number", "minimum": 1, "maximum": 1000 },
+      "defaultTo": { "type": "string", "minLength": 1 },
+      "allowFrom": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 }
+      },
+      "permissionApprovalEnabled": { "type": "boolean" },
+      "permissionApprovalHandler": { "type": "string", "minLength": 1 },
+      "permissionApprovalUrl": { "type": "string", "minLength": 1 },
+      "permissionApprovalTimeoutMs": { "type": "number", "minimum": 1 },
+      "permissionDeniedReply": { "type": "string", "minLength": 1 }
+    }
+  },
+  "channelConfigs": {
+    "bot-chat": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "name": { "type": "string", "minLength": 1 },
+          "backendUrl": { "type": "string", "minLength": 1 },
+          "botKey": { "type": "string", "minLength": 1 },
+          "botId": { "type": "string", "minLength": 1 },
+          "mqttTcpUrl": { "type": "string", "minLength": 1 },
+          "stateDir": { "type": "string", "minLength": 1 },
+          "historyCatchupLimit": { "type": "number", "minimum": 1, "maximum": 1000 },
+          "defaultTo": { "type": "string", "minLength": 1 },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "permissionApprovalEnabled": { "type": "boolean" },
+          "permissionApprovalHandler": { "type": "string", "minLength": 1 },
+          "permissionApprovalUrl": { "type": "string", "minLength": 1 },
+          "permissionApprovalTimeoutMs": { "type": "number", "minimum": 1 },
+          "permissionDeniedReply": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   }
 }
