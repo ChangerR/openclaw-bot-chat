@@ -26,8 +26,7 @@ COMPOSE_PROJECT_NAME=openclaw-bot-chat-dev
 
 # Reverse proxy / published ports
 FRONTEND_PORT_MAPPING=127.0.0.1:4173:3000
-BACKEND_PORT_MAPPING=127.0.0.1:8080:8080
-POSTGRES_PORT_MAPPING=127.0.0.1:5432:5432
+BACKEND_PORT_MAPPING=127.0.0.1:18080:8080
 REDIS_PORT_MAPPING=127.0.0.1:6379:6379
 MQTT_TCP_PORT_MAPPING=127.0.0.1:1883:1883
 MQTT_WS_PORT_MAPPING=127.0.0.1:8083:8083
@@ -222,12 +221,13 @@ EOF
 
 print_dev_runtime_summary() {
   parse_frontend_mapping
+  parse_backend_mapping
 
   cat <<EOF
 Domain:              ${DOMAIN}
 Frontend dev URL:    http://${DOMAIN}
 Frontend dev bind:   ${FRONTEND_BIND_HOST}:${FRONTEND_BIND_PORT}
-Backend upstream:    127.0.0.1:8080
+Backend upstream:    ${BACKEND_BIND_HOST}:${BACKEND_BIND_PORT}
 API base:            ${NEXT_PUBLIC_API_URL}
 Broker WS URL:       ${MQTT_WS_PUBLIC_URL}
 Env file:            ${ENV_FILE}

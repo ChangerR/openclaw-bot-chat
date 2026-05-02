@@ -18,6 +18,9 @@ import {
   parseBotChatTarget,
   resolveBotChatAccount,
   setBotChatRuntime,
+  buildBotChatDirectTopic,
+  buildBotChatGroupTopic,
+  buildBotChatHistoryMessagesUrl,
 } from '../src/runtime.ts';
 import { inspectBotChatAccount } from '../src/account-inspect.ts';
 import { botChatPlugin } from '../src/channel.ts';
@@ -85,6 +88,11 @@ test('target parser normalizes direct, channel, and raw targets', () => {
     id: 'conv-1',
     raw: 'conv-1',
   });
+  assert.deepEqual(parseBotChatTarget('group:group-1'), {
+    kind: 'channel',
+    id: 'chat/group/group-1',
+    raw: 'group:group-1',
+  });
   assert.equal(normalizeBotChatTarget('alice-room'), 'channel:alice-room');
   assert.equal(normalizeBotChatTarget('user:alice'), 'dm:alice');
   assert.equal(inferBotChatTargetChatType('dm:alice'), 'direct');
@@ -95,16 +103,28 @@ test('target parser normalizes direct, channel, and raw targets', () => {
 test('outbound target builder maps direct and channel targets', () => {
   const account = resolveBotChatAccount({ backendUrl: 'http://b', botKey: 'k', botId: 'bot-a' });
   assert.deepEqual(buildBotChatOutboundMessageTarget({ raw: 'dm:alice', account }), {
-    channelId: 'alice',
+    channelId: 'chat/dm/user/alice/bot/bot-a',
     userId: 'alice',
     normalizedTarget: 'dm:alice',
     chatType: 'direct',
+    publishTopic: 'chat/dm/user/alice/bot/bot-a',
+    recipientType: 'user',
   });
   assert.deepEqual(buildBotChatOutboundMessageTarget({ raw: 'conv-1', account }), {
     channelId: 'conv-1',
     userId: 'bot-a',
     normalizedTarget: 'channel:conv-1',
     chatType: 'channel',
+    publishTopic: 'conv-1',
+    recipientType: 'user',
+  });
+  assert.deepEqual(buildBotChatOutboundMessageTarget({ raw: 'group:group-1', account }), {
+    channelId: 'chat/group/group-1',
+    userId: 'bot-a',
+    normalizedTarget: 'channel:chat/group/group-1',
+    chatType: 'channel',
+    publishTopic: 'chat/group/group-1',
+    recipientType: 'group',
   });
   assert.deepEqual(
     buildBotChatOutboundMessageTarget({
@@ -117,8 +137,12 @@ test('outbound target builder maps direct and channel targets', () => {
       userId: 'user-a',
       normalizedTarget: 'channel:conv-1',
       chatType: 'channel',
+      publishTopic: 'conv-1',
+      recipientType: 'user',
     },
   );
+  assert.equal(buildBotChatDirectTopic('bot-z', 'bot-a'), 'chat/dm/user/bot-z/bot/bot-a');
+  assert.equal(buildBotChatGroupTopic('chat/group/existing'), 'chat/group/existing');
 });
 
 test('normalize allowFrom strips provider prefixes and empties', () => {
@@ -208,16 +232,28 @@ test('outbound payload preserves text, target ids, and thread metadata', () => {
       channelId: 'conv-2',
       userId: 'user-2',
       text: 'reply',
-      metadata: { topic: 'topic/out', threadId: 'thread-2', replyToId: 'm1' },
+      metadata: {
+        topic: 'topic/out',
+        threadId: 'thread-2',
+        replyToId: 'm1',
+        botId: 'bot-2',
+        toType: 'group',
+        publishTopic: 'internal-topic',
+      },
     }),
   );
 
   assert.equal(payload.conversation_id, 'conv-2');
   assert.equal(payload.thread_id, 'thread-2');
   assert.equal(payload.reply_to_id, 'm1');
+  assert.equal(payload.from.id, 'bot-2');
+  assert.equal(payload.to.type, 'group');
   assert.equal(payload.to.id, 'user-2');
   assert.equal(payload.content.body, 'reply');
   assert.equal(payload.content.meta.topic, 'topic/out');
+  assert.equal('botId' in payload.content.meta, false);
+  assert.equal('toType' in payload.content.meta, false);
+  assert.equal('publishTopic' in payload.content.meta, false);
 });
 
 test('state path stays scoped by bot id', () => {
@@ -404,18 +440,43 @@ test('outbound adapter uses parsed BotChat target mapping', async () => {
 
   assert.deepEqual(sent, [
     {
-      channelId: 'alice',
+      channelId: 'chat/dm/user/alice/bot/bot-a',
       userId: 'alice',
       text: 'hello direct',
-      metadata: { target: 'dm:alice', chatType: 'direct' },
+      metadata: {
+        target: 'dm:alice',
+        chatType: 'direct',
+        botId: 'bot-a',
+        toType: 'user',
+        publishTopic: 'chat/dm/user/alice/bot/bot-a',
+      },
     },
     {
       channelId: 'conv-1',
       userId: 'user-a',
       text: 'hello channel',
-      metadata: { userId: 'user-a', target: 'channel:conv-1', chatType: 'channel' },
+      metadata: {
+        userId: 'user-a',
+        target: 'channel:conv-1',
+        chatType: 'channel',
+        botId: 'bot-a',
+        toType: 'user',
+        publishTopic: 'conv-1',
+      },
     },
   ]);
+});
+
+test('history catchup URL uses bot-runtime endpoint', () => {
+  assert.equal(
+    buildBotChatHistoryMessagesUrl({
+      backendUrl: 'http://backend/',
+      conversationId: 'chat/group/group-1',
+      afterSeq: 7,
+      limit: 10,
+    }),
+    'http://backend/api/v1/bot-runtime/messages/chat%2Fgroup%2Fgroup-1?limit=10&after_seq=7',
+  );
 });
 
 test('pairing and allowlist adapters normalize sender ids consistently', async () => {

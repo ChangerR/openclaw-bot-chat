@@ -1,0 +1,32 @@
+{
+  "id": "openclaw-distill-hook",
+  "name": "OpenClaw Distill Hook",
+  "description": "Trigger memory distillation after QQBot direct-session compaction.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "skillPath": {
+        "type": "string"
+      },
+      "vaultPath": {
+        "type": "string"
+      },
+      "transcriptLimit": {
+        "type": "integer",
+        "minimum": 8,
+        "maximum": 200
+      },
+      "transcriptCharLimit": {
+        "type": "integer",
+        "minimum": 2000,
+        "maximum": 120000
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 900000
+      }
+    }
+  }
+}

@@ -39,6 +39,7 @@ create_env_file() {
 # Public domain
 DOMAIN=test.iotdevices.site
 PUBLIC_SCHEME=https
+NEXT_PUBLIC_API_URL=\${PUBLIC_SCHEME}://\${DOMAIN}
 
 # Docker project
 COMPOSE_PROJECT_NAME=openclaw-bot-chat
@@ -46,7 +47,6 @@ COMPOSE_PROJECT_NAME=openclaw-bot-chat
 # Reverse proxy / published ports
 FRONTEND_PORT_MAPPING=127.0.0.1:4173:3000
 BACKEND_PORT_MAPPING=127.0.0.1:8080:8080
-POSTGRES_PORT_MAPPING=127.0.0.1:5432:5432
 REDIS_PORT_MAPPING=127.0.0.1:6379:6379
 MQTT_TCP_PORT_MAPPING=127.0.0.1:1883:1883
 MQTT_WS_PORT_MAPPING=127.0.0.1:8083:8083
@@ -196,13 +196,35 @@ parse_frontend_mapping() {
   export FRONTEND_CONTAINER_PORT
 }
 
+parse_backend_mapping() {
+  local mapping
+
+  mapping="${BACKEND_PORT_MAPPING:-127.0.0.1:8080:8080}"
+  IFS=":" read -r part1 part2 part3 <<<"$mapping"
+
+  if [[ -n "${part3:-}" ]]; then
+    BACKEND_BIND_HOST="$part1"
+    BACKEND_BIND_PORT="$part2"
+    BACKEND_CONTAINER_PORT="$part3"
+  else
+    BACKEND_BIND_HOST="127.0.0.1"
+    BACKEND_BIND_PORT="$part1"
+    BACKEND_CONTAINER_PORT="$part2"
+  fi
+
+  export BACKEND_BIND_HOST
+  export BACKEND_BIND_PORT
+  export BACKEND_CONTAINER_PORT
+}
+
 print_runtime_summary() {
   parse_frontend_mapping
+  parse_backend_mapping
 
   cat <<EOF
 Domain:              ${DOMAIN}
 Frontend upstream:   ${FRONTEND_BIND_HOST}:${FRONTEND_BIND_PORT}
-Backend upstream:    127.0.0.1:8080
+Backend upstream:    ${BACKEND_BIND_HOST}:${BACKEND_BIND_PORT}
 Public URL:          ${PUBLIC_SCHEME}://${DOMAIN}
 Env file:            ${ENV_FILE}
 EOF

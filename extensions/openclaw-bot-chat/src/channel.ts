@@ -33,6 +33,9 @@ const botChatOutboundAdapter: ChannelOutboundAdapter = {
           ...(metadata ?? {}),
           target: target.normalizedTarget,
           chatType: target.chatType,
+          botId: account.botId,
+          toType: target.recipientType,
+          publishTopic: target.publishTopic,
         },
       });
       return {

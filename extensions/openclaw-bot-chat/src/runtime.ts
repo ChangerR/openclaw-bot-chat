@@ -27,6 +27,9 @@ interface RuntimeHooks {
 }
 
 interface BootstrapResponse {
+  bot?: {
+    id?: string;
+  };
   client_id?: string;
   broker?: {
     tcp_url?: string;
@@ -64,7 +67,7 @@ export function parseBotChatTarget(raw: string): BotChatTarget {
     throw new Error("BotChat target is required");
   }
 
-  const match = /^(dm|direct|user|channel|conversation):(.+)$/i.exec(trimmed);
+  const match = /^(dm|direct|user|channel|conversation|group):(.+)$/i.exec(trimmed);
   if (!match) {
     return { kind: "channel", id: trimmed, raw: trimmed };
   }
@@ -77,6 +80,9 @@ export function parseBotChatTarget(raw: string): BotChatTarget {
 
   if (kind === "dm" || kind === "direct" || kind === "user") {
     return { kind: "direct", id, raw: trimmed };
+  }
+  if (kind === "group") {
+    return { kind: "channel", id: buildBotChatGroupTopic(id), raw: trimmed };
   }
   return { kind: "channel", id, raw: trimmed };
 }
@@ -94,24 +100,94 @@ export function buildBotChatOutboundMessageTarget(params: {
   raw: string;
   account: ResolvedBotChatAccount;
   metadata?: Record<string, unknown>;
-}): { channelId: string; userId: string; normalizedTarget: string; chatType: "direct" | "channel" } {
+}): {
+  channelId: string;
+  userId: string;
+  normalizedTarget: string;
+  chatType: "direct" | "channel";
+  publishTopic: string;
+  recipientType: "user" | "group";
+} {
   const parsed = parseBotChatTarget(params.raw);
   if (parsed.kind === "direct") {
+    const channelId = buildBotChatDirectTopic(parsed.id, params.account.botId);
     return {
-      channelId: parsed.id,
+      channelId,
       userId: parsed.id,
       normalizedTarget: `dm:${parsed.id}`,
       chatType: "direct",
+      publishTopic: channelId,
+      recipientType: "user",
     };
   }
 
   const userId = readString(params.metadata?.userId) ?? params.account.botId;
+  const recipientType = inferBotChatRecipientType(parsed.id);
   return {
     channelId: parsed.id,
     userId,
     normalizedTarget: `channel:${parsed.id}`,
     chatType: "channel",
+    publishTopic: parsed.id,
+    recipientType,
   };
+}
+
+export function buildBotChatDirectTopic(userId: string, botId: string): string {
+  return buildCanonicalBotChatDirectTopic({ type: "user", id: userId }, { type: "bot", id: botId });
+}
+
+export function buildBotChatGroupTopic(groupId: string): string {
+  const trimmed = groupId.trim().replace(/^\/+/, "");
+  return trimmed.startsWith("chat/group/") ? trimmed : `chat/group/${trimmed}`;
+}
+
+export function buildBotChatHistoryMessagesUrl(params: {
+  backendUrl: string;
+  conversationId: string;
+  afterSeq?: number;
+  limit: number;
+}): string {
+  const query = new URLSearchParams();
+  query.set("limit", String(params.limit));
+  if (params.afterSeq !== undefined) {
+    query.set("after_seq", String(params.afterSeq));
+  }
+  const base = params.backendUrl.replace(/\/+$/, "");
+  return `${base}/api/v1/bot-runtime/messages/${encodeURIComponent(params.conversationId)}?${query.toString()}`;
+}
+
+function buildCanonicalBotChatDirectTopic(
+  left: { type: "user" | "bot"; id: string },
+  right: { type: "user" | "bot"; id: string },
+): string {
+  const [first, second] = canonicalizeBotChatDirectPeers(left, right);
+  return `chat/dm/${first.type}/${first.id}/${second.type}/${second.id}`;
+}
+
+function canonicalizeBotChatDirectPeers(
+  left: { type: "user" | "bot"; id: string },
+  right: { type: "user" | "bot"; id: string },
+): [{ type: "user" | "bot"; id: string }, { type: "user" | "bot"; id: string }] {
+  const leftRank = left.type === "user" ? 0 : 1;
+  const rightRank = right.type === "user" ? 0 : 1;
+  if (leftRank !== rightRank) {
+    return leftRank < rightRank ? [left, right] : [right, left];
+  }
+  return left.id <= right.id ? [left, right] : [right, left];
+}
+
+function inferBotChatRecipientType(channelId: string): "user" | "group" {
+  return channelId.startsWith("chat/group/") ? "group" : "user";
+}
+
+function isBotChatConversationTopic(value: string): boolean {
+  return value.startsWith("chat/dm/") || value.startsWith("chat/group/");
+}
+
+function omitBotChatInternalMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const { botId: _botId, toType: _toType, publishTopic: _publishTopic, ...rest } = metadata;
+  return rest;
 }
 
 export function normalizeAllowFromEntry(raw: string): string {
@@ -333,14 +409,17 @@ export function buildBotChatStatePath(config: Record<string, unknown>): string |
 export function buildBotChatOutboundPayload(message: BotChatMessage): string {
   const threadId = readString(message.metadata?.threadId);
   const replyToId = readString(message.metadata?.replyToId);
+  const botId = readString(message.metadata?.botId) ?? BOT_CHAT_DEFAULT_ACCOUNT_ID;
+  const toType = readString(message.metadata?.toType) ?? "user";
+  const contentMeta = omitBotChatInternalMetadata(message.metadata ?? {});
   return JSON.stringify({
     id: randomId(),
     conversation_id: message.channelId,
     ...(threadId ? { thread_id: threadId } : {}),
     ...(replyToId ? { reply_to_id: replyToId } : {}),
-    from: { type: "bot", id: "openclaw" },
-    to: { type: "user", id: message.userId },
-    content: { type: "text", body: message.text, meta: message.metadata ?? {} },
+    from: { type: "bot", id: botId },
+    to: { type: toType, id: message.userId },
+    content: { type: "text", body: message.text, meta: contentMeta },
     timestamp: Math.floor(Date.now() / 1000),
   });
 }
@@ -351,6 +430,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
   private logger?: RuntimeLogger;
   private hooks?: RuntimeHooks;
   private publishTopic?: string;
+  private publishTopics = new Set<string>();
   private permissionDeniedReply?: string;
   private approver?: PermissionApprover;
   private statePath?: string;
@@ -393,6 +473,7 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       throw new Error("mqtt broker url is required");
     }
 
+    this.publishTopics = new Set(readStringArray(bootstrap.publish_topics));
     this.publishTopic = readString(bootstrap.publish_topics?.[0]);
     const subscriptions = readStringArray(bootstrap.subscriptions?.map((item) => item.topic));
 
@@ -459,16 +540,38 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       throw new Error("mqtt client is not ready");
     }
 
-    const topic = readString(message.metadata?.topic) ?? this.publishTopic;
+    const topic = this.resolvePublishTopic(message);
     if (!topic) {
       throw new Error("publish topic is not configured");
     }
 
-    this.mqttClient.publish(topic, buildBotChatOutboundPayload(message), { qos: this.qos });
+    this.mqttClient.publish(
+      topic,
+      buildBotChatOutboundPayload({
+        ...message,
+        channelId: topic,
+        metadata: {
+          ...(message.metadata ?? {}),
+          topic,
+        },
+      }),
+      { qos: this.qos },
+    );
     this.logger?.debug?.("botchat.runtime.outbound", {
       topic,
       channelId: message.channelId,
     });
+  }
+
+  private resolvePublishTopic(message: BotChatMessage): string | undefined {
+    const explicitTopic = readString(message.metadata?.topic) ?? readString(message.metadata?.publishTopic);
+    if (explicitTopic) {
+      return explicitTopic;
+    }
+    if (isBotChatConversationTopic(message.channelId) || this.publishTopics.has(message.channelId)) {
+      return message.channelId;
+    }
+    return this.publishTopic;
   }
 
   private async handleInbound(
@@ -721,13 +824,7 @@ async function fetchConversationMessages(
   afterSeq: number | undefined,
   limit: number,
 ): Promise<unknown[]> {
-  const query = new URLSearchParams();
-  query.set("limit", String(limit));
-  if (afterSeq !== undefined) {
-    query.set("after_seq", String(afterSeq));
-  }
-  const base = backendUrl.replace(/\/+$/, "");
-  const url = `${base}/api/v1/conversations/${encodeURIComponent(conversationId)}/messages?${query.toString()}`;
+  const url = buildBotChatHistoryMessagesUrl({ backendUrl, conversationId, afterSeq, limit });
   const response = await fetch(url, {
     method: "GET",
     headers: {

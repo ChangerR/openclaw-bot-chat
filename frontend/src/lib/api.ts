@@ -14,7 +14,38 @@ import type {
   RealtimeBootstrapResponse,
 } from './types'
 
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/+$/, '')
+const RAW_API_BASE = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/+$/, '')
+
+function getApiBase(): string {
+  if (typeof window === 'undefined') {
+    return RAW_API_BASE
+  }
+
+  if (!RAW_API_BASE) {
+    return ''
+  }
+
+  if (RAW_API_BASE.startsWith('/')) {
+    return RAW_API_BASE
+  }
+
+  try {
+    const configuredUrl = new URL(RAW_API_BASE)
+
+    if (configuredUrl.origin === window.location.origin) {
+      return ''
+    }
+
+    // Avoid mixed-content failures when the app is served over HTTPS.
+    if (window.location.protocol === 'https:' && configuredUrl.protocol === 'http:') {
+      return ''
+    }
+
+    return configuredUrl.toString().replace(/\/+$/, '')
+  } catch {
+    return ''
+  }
+}
 
 function getToken(): string | null {
   if (typeof window === 'undefined') return null
@@ -26,13 +57,14 @@ async function request<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const token = getToken()
+  const apiBase = getApiBase()
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...options.headers,
   }
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
+  const response = await fetch(`${apiBase}${endpoint}`, {
     ...options,
     headers,
   })
