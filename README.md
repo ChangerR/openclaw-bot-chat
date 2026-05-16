@@ -1,45 +1,55 @@
 # OpenClaw Bot Chat
 
-Broker-first 实时链路仓库，包含：
+OpenClaw Bot Chat is a broker-first realtime chat system for OpenClaw bots.
 
-- `backend/`: Go 服务，只做认证、业务数据、bootstrap、历史查询、MQTT 消费持久化
-- `frontend/`: Next.js 聊天前端，直接通过 MQTT over WebSocket 连接 broker
-- `plugins/openclaw-bot-chat/`: testagent/plugin，直接通过 MQTT TCP 连接 broker
+The repository contains:
 
-## Realtime 架构
+- `backend/`: Go API service for authentication, business data, realtime bootstrap, message history, and MQTT message persistence.
+- `frontend/`: Next.js chat UI that connects directly to the MQTT broker over WebSocket.
+- `plugins/openclaw-bot-chat/`: OpenClaw bot runtime plugin / test agent that connects directly to the MQTT broker over TCP.
 
-唯一实时主链路：
+## Architecture
+
+Realtime traffic goes through the MQTT broker, not through the backend:
 
 - `frontend -> MQTT over WebSocket -> broker`
 - `plugin/testagent -> MQTT TCP -> broker`
 
-`backend` 不再承担实时转发，不提供 `/api/v1/ws`，也不再提供 HTTP realtime send/heartbeat。
+The backend does not act as a realtime relay. It does not expose `/api/v1/ws`, and it does not provide HTTP realtime send or heartbeat endpoints.
 
-`backend` 职责固定为：
+The backend is responsible for:
 
-- 认证与业务数据管理
-- `GET /api/v1/realtime/bootstrap`（用户）
-- `GET /api/v1/bot-runtime/bootstrap`（bot）
-- 历史查询与断线补偿查询
-- MQTT topic 消费并落库
+- User and bot authentication.
+- Business data for bots, groups, assets, messages, and conversations.
+- `GET /api/v1/realtime/bootstrap` for user clients.
+- `GET /api/v1/bot-runtime/bootstrap` for bot runtime clients.
+- Message history and reconnect catch-up queries.
+- Consuming MQTT business topics and persisting messages.
 
-## Broker 说明
+## Broker Requirements
 
-默认 compose 使用 **EMQX**，但实现不写死 EMQX。只要 MQTT broker 支持以下能力即可替换：
+The default Docker Compose setup uses EMQX, but the application is not tied to EMQX. Any MQTT broker can be used if it supports:
 
-- MQTT TCP + MQTT over WebSocket
-- 连接认证（username/password 或等价机制）
-- topic 发布/订阅 ACL
+- MQTT TCP and MQTT over WebSocket.
+- Connection authentication, such as username/password or an equivalent mechanism.
+- Topic publish/subscribe ACLs.
 
-当前仓库保留一个明确 TODO：
+Business message payloads do not include an `auth` field. In production, authentication and ACL enforcement should be handled by the broker.
 
-- `TODO(broker-acl)`: 接入你们自有 broker 的动态认证和动态 ACL 下发流程。现阶段 compose 示例先保证 broker-first 链路可跑通。
+Current broker integration TODO:
 
-业务消息 payload 不带 `auth` 字段。生产环境应由 broker 负责认证与 ACL；当前 compose 的 EMQX 示例已开启用户名密码认证，ACL 动态化仍是后续 TODO。
+- `TODO(broker-acl)`: integrate dynamic authentication and dynamic ACL provisioning for your own broker. The current Compose setup is intended to make the broker-first flow runnable locally.
 
-## Docker Compose
+## Quick Start With Docker Compose
 
-默认启动：
+Start the core stack:
+
+```bash
+docker compose up --build -d
+docker compose ps
+```
+
+This starts:
 
 - PostgreSQL
 - Redis
@@ -47,35 +57,68 @@ Broker-first 实时链路仓库，包含：
 - Backend
 - Frontend
 
-```bash
-docker compose up --build -d
-docker compose ps
-```
-
-可选启动 testagent（需要先提供 bot key 等环境变量）：
+Optionally start the test agent after providing the required bot key and model environment variables:
 
 ```bash
 docker compose --profile testagent up --build -d
 ```
 
-常用端口映射：
+Common local ports:
 
 - Frontend: `3000`
 - Backend: `8080`
 - MQTT TCP: `1883`
-- MQTT WS: `8083` (`/mqtt`)
+- MQTT WebSocket: `8083` with path `/mqtt`
 - EMQX Dashboard: `18083`
 
-## 关键环境变量
+## Configuration
 
-- `NEXT_PUBLIC_API_URL`: 前端访问 backend 的地址
-- `MQTT_USERNAME` / `MQTT_PASSWORD`: backend bootstrap 输出给客户端的 broker 凭据字段
-- `MQTT_TCP_PUBLIC_URL`: backend bootstrap 返回给 plugin/testagent 的 broker TCP 地址
-- `MQTT_WS_PUBLIC_URL`: backend bootstrap 返回给 frontend 的 broker WS 地址
-- `JWT_SECRET` / `DATABASE_PASSWORD`: 生产务必替换
+Important environment variables:
 
-## 文档
+- `NEXT_PUBLIC_API_URL`: backend URL used by the frontend.
+- `MQTT_USERNAME` / `MQTT_PASSWORD`: broker credentials returned by backend bootstrap endpoints.
+- `MQTT_TCP_PUBLIC_URL`: broker TCP URL returned to the plugin / test agent.
+- `MQTT_WS_PUBLIC_URL`: broker WebSocket URL returned to the frontend.
+- `JWT_SECRET`: JWT signing secret. Replace it in production.
+- `DATABASE_PASSWORD`: PostgreSQL password. Replace it in production.
 
-- API: `docs/API.md`
-- Backend 运行与配置: `backend/README.md`
-- Plugin/testagent 使用: `plugins/openclaw-bot-chat/README.md`
+The backend also reads `backend/config.yaml`, with environment variables overriding config values in Docker Compose.
+
+## Running Components Manually
+
+Backend:
+
+```bash
+cd backend
+go mod tidy
+go run ./cmd/server
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Test agent / plugin:
+
+```bash
+cp ./scripts/test-agent.env.example ./scripts/test-agent.env
+./scripts/test-agent.sh start
+```
+
+Useful test-agent commands:
+
+```bash
+./scripts/test-agent.sh check
+./scripts/test-agent.sh print-config
+```
+
+## Documentation
+
+- API reference: `docs/API.md`
+- Backend setup and configuration: `backend/README.md`
+- Plugin / test-agent usage: `plugins/openclaw-bot-chat/README.md`
+
