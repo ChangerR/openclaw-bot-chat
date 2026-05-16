@@ -42,7 +42,7 @@ jwt:
   issuer: "openclaw-bot-chat"
 
 storage:
-  provider: "" # empty disables object storage; supported providers: cos, oss
+  provider: "" # empty disables object storage; supported providers: cos, oss, s3
   bucket: ""
   region: ""
   endpoint: ""
@@ -59,6 +59,14 @@ storage:
     access_key_id: ""
     access_key_secret: ""
     security_token: ""
+  s3:
+    endpoint: ""         # backend/internal endpoint, e.g. minio:9000
+    public_endpoint: ""  # optional browser/client endpoint for presigned URLs, e.g. 127.0.0.1:9000
+    region: ""
+    bucket: ""
+    access_key: ""
+    secret_key: ""
+    ssl: false
 
 asset:
   max_image_size_mb: 10

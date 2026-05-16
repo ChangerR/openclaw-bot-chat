@@ -8,6 +8,7 @@ import {
   type PermissionCheck,
 } from "../types/permissions";
 import type {
+  OpenClawAttachment,
   BotChatMessage,
   BotChatOutgoingMessage,
   OpenClawRequest,
@@ -192,6 +193,7 @@ export function toOpenClawRequest(
   channel?: ChannelContext,
 ): OpenClawRequest {
   const normalizedContent = readNormalizedBody(message);
+  const attachments = buildOpenClawAttachments(message);
   const mentionedCurrentBot = channel?.botId
     ? isMessageMentionedForBot(message, channel.botId)
     : undefined;
@@ -199,6 +201,7 @@ export function toOpenClawRequest(
   return {
     session_id: sessionId,
     content: normalizedContent,
+    ...(attachments.length > 0 ? { attachments } : {}),
     metadata: {
       dialog_id: message.dialog_id,
       message_id: message.message_id,
@@ -214,6 +217,7 @@ export function toOpenClawRequest(
       timestamp: message.timestamp,
       ...(message.seq !== undefined ? { seq: message.seq } : {}),
       ...(message.meta ? { message_meta: message.meta } : {}),
+      ...(attachments.length > 0 ? { attachments, media: attachments } : {}),
       ...(mentionedCurrentBot !== undefined
         ? { mentioned_current_bot: mentionedCurrentBot }
         : {}),
@@ -492,6 +496,75 @@ function isMessageMentionedForBot(
 function readNormalizedBody(message: BotChatMessage): string {
   const normalized = readString(message.meta?.["normalized_body"]);
   return normalized ?? message.body;
+}
+
+function buildOpenClawAttachments(message: BotChatMessage): OpenClawAttachment[] {
+  const metadata = message.meta ?? {};
+  const messageMeta = readRecord(metadata["message_meta"]);
+  const asset =
+    readRecord(metadata["asset"]) ??
+    readRecord(messageMeta?.["asset"]) ??
+    readRecord(metadata["attachment"]);
+  const attachment = buildOpenClawAttachmentFromAsset(asset, metadata, message.body);
+  return attachment ? [attachment] : [];
+}
+
+function buildOpenClawAttachmentFromAsset(
+  asset: JsonRecord | undefined,
+  metadata: JsonRecord,
+  fallbackName: string,
+): OpenClawAttachment | undefined {
+  const source = asset ?? metadata;
+  const url =
+    readString(source["download_url"]) ??
+    readString(source["external_url"]) ??
+    readString(source["source_url"]) ??
+    readString(source["url"]) ??
+    readString(metadata["download_url"]) ??
+    readString(metadata["external_url"]) ??
+    readString(metadata["source_url"]) ??
+    readString(metadata["url"]);
+  if (!url) {
+    return undefined;
+  }
+
+  const kind =
+    readString(source["kind"]) ??
+    readString(source["type"]) ??
+    messageContentKind(metadata) ??
+    "file";
+  const name =
+    readString(source["file_name"]) ??
+    readString(source["name"]) ??
+    readString(source["filename"]) ??
+    readString(metadata["file_name"]) ??
+    readString(metadata["name"]) ??
+    fallbackName;
+  const mimeType =
+    readString(source["mime_type"]) ??
+    readString(source["mimeType"]) ??
+    readString(source["content_type"]) ??
+    readString(metadata["mime_type"]) ??
+    readString(metadata["mimeType"]);
+  const size = readNumber(source["size"]) ?? readNumber(metadata["size"]);
+
+  return {
+    type: kind,
+    kind,
+    url,
+    ...(name ? { name, fileName: name } : {}),
+    ...(mimeType ? { mimeType, contentType: mimeType } : {}),
+    ...(size !== undefined ? { size } : {}),
+    ...(asset ? { asset } : {}),
+  };
+}
+
+function messageContentKind(metadata: JsonRecord): string | undefined {
+  const contentType = readString(metadata["content_type"]);
+  if (!contentType) {
+    return undefined;
+  }
+  return contentType === "text" ? undefined : contentType;
 }
 
 function normalizeOutgoingBody(

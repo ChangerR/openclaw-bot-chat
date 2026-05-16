@@ -80,7 +80,20 @@ export interface BootstrapResponse {
 export interface OpenClawRequest {
   session_id: string;
   content: string;
+  attachments?: OpenClawAttachment[];
   metadata: Record<string, unknown>;
+}
+
+export interface OpenClawAttachment {
+  type: string;
+  kind: string;
+  url: string;
+  name?: string;
+  fileName?: string;
+  mimeType?: string;
+  contentType?: string;
+  size?: number;
+  asset?: Record<string, unknown>;
 }
 
 export interface OpenClawResponse {

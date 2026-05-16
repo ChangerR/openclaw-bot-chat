@@ -15,6 +15,18 @@ import {
   resolveBotChatAccount,
 } from "./runtime.js";
 
+type BotChatAttachment = {
+  type: string;
+  kind: string;
+  url: string;
+  name?: string;
+  fileName?: string;
+  mimeType?: string;
+  contentType?: string;
+  size?: number;
+  asset?: Record<string, unknown>;
+};
+
 const botChatOutboundAdapter: ChannelOutboundAdapter = {
   deliveryMode: "direct",
   textChunkLimit: 4000,
@@ -144,12 +156,36 @@ async function dispatchBotChatReply(params: {
     userId: params.message.userId,
   });
   const replyChunks: string[] = [];
+  const attachments = buildBotChatAttachments(params.message);
+  const gatewayBody = buildBotChatGatewayBody(params.message.text, attachments);
+  const attachmentContext =
+    attachments.length > 0
+      ? {
+          Attachments: attachments,
+          attachments,
+          Media: attachments,
+          media: attachments,
+          Files: attachments,
+          files: attachments,
+          MediaUrl: attachments[0]?.url,
+          MediaUrls: attachments.map((attachment) => attachment.url),
+          MediaType: attachments[0]?.mimeType ?? attachments[0]?.contentType,
+          MediaTypes: attachments.map(
+            (attachment) => attachment.mimeType ?? attachment.contentType ?? "application/octet-stream",
+          ),
+          HasAttachments: true,
+          AttachmentCount: attachments.length,
+        }
+      : {};
   await dispatch({
     cfg: params.cfg,
     ctx: {
-      Body: params.message.text,
-      CommandBody: params.message.text,
-      BodyForCommands: params.message.text,
+      Body: gatewayBody.body,
+      BodyForAgent: gatewayBody.body,
+      RawBody: gatewayBody.commandBody,
+      CommandBody: gatewayBody.commandBody,
+      BodyForCommands: gatewayBody.commandBody,
+      ...attachmentContext,
       From: params.message.userId,
       To: params.account.botId,
       SenderId: params.message.userId,
@@ -228,6 +264,131 @@ function mergeBotChatReplyChunks(chunks: string[]): string {
   return merged.join("\n\n").trim();
 }
 
+function buildBotChatAttachments(message: {
+  text: string;
+  metadata?: Record<string, unknown>;
+}): BotChatAttachment[] {
+  const metadata = message.metadata ?? {};
+  const messageMeta = readRecord(metadata.message_meta);
+  const asset =
+    readRecord(metadata.asset) ??
+    readRecord(messageMeta?.asset) ??
+    readRecord(metadata.attachment);
+  const attachment = buildBotChatAttachmentFromAsset(asset, metadata, message.text);
+  return attachment ? [attachment] : [];
+}
+
+function buildBotChatGatewayBody(
+  text: string,
+  attachments: BotChatAttachment[],
+): { body: string; commandBody: string } {
+  if (attachments.length === 0) {
+    return { body: text, commandBody: text };
+  }
+
+  const caption = normalizeBotChatMediaCaption(text, attachments[0]);
+  const mediaKind = resolveOpenClawMediaKind(attachments);
+  const marker = `<media:${mediaKind}>`;
+  const visibleUrls = formatVisibleAttachmentUrls(attachments);
+  const visibleText = [caption, visibleUrls].filter(Boolean).join("\n");
+  return {
+    body: visibleText ? `${marker} ${visibleText}` : marker,
+    commandBody: caption,
+  };
+}
+
+function formatVisibleAttachmentUrls(attachments: BotChatAttachment[]): string {
+  const urls = attachments.map((attachment) => attachment.url).filter(Boolean);
+  if (urls.length === 0) {
+    return "";
+  }
+  if (urls.length === 1) {
+    return `Attachment URL: ${urls[0]}`;
+  }
+  return ["Attachment URLs:", ...urls.map((url) => `- ${url}`)].join("\n");
+}
+
+function normalizeBotChatMediaCaption(
+  text: string,
+  attachment: BotChatAttachment | undefined,
+): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const fileName = attachment?.fileName ?? attachment?.name;
+  if (fileName && trimmed === fileName.trim()) {
+    return "";
+  }
+  if (trimmed === "Image" && attachment?.kind === "image") {
+    return "";
+  }
+  return trimmed;
+}
+
+function resolveOpenClawMediaKind(attachments: BotChatAttachment[]): string {
+  const kinds = new Set(
+    attachments.map((attachment) => {
+      const mimeKind = attachment.mimeType?.split("/", 1)[0]?.trim().toLowerCase();
+      const rawKind = attachment.kind.trim().toLowerCase();
+      if (mimeKind === "image" || mimeKind === "audio" || mimeKind === "video") {
+        return mimeKind;
+      }
+      if (rawKind === "image" || rawKind === "audio" || rawKind === "video") {
+        return rawKind;
+      }
+      return "file";
+    }),
+  );
+  return kinds.size === 1 ? [...kinds][0] ?? "file" : "mixed";
+}
+
+function buildBotChatAttachmentFromAsset(
+  asset: Record<string, unknown> | undefined,
+  metadata: Record<string, unknown>,
+  fallbackName: string,
+): BotChatAttachment | undefined {
+  const source = asset ?? metadata;
+  const url =
+    readString(source.download_url) ??
+    readString(source.external_url) ??
+    readString(source.source_url) ??
+    readString(source.url) ??
+    readString(metadata.download_url) ??
+    readString(metadata.external_url) ??
+    readString(metadata.source_url) ??
+    readString(metadata.url);
+  if (!url) {
+    return undefined;
+  }
+
+  const kind = readString(source.kind) ?? readString(source.type) ?? readString(metadata.content_type) ?? "file";
+  const name =
+    readString(source.file_name) ??
+    readString(source.name) ??
+    readString(source.filename) ??
+    readString(metadata.file_name) ??
+    readString(metadata.name) ??
+    fallbackName;
+  const mimeType =
+    readString(source.mime_type) ??
+    readString(source.mimeType) ??
+    readString(source.content_type) ??
+    readString(metadata.mime_type) ??
+    readString(metadata.mimeType);
+  const size = readNumber(source.size) ?? readNumber(metadata.size);
+
+  return {
+    type: kind,
+    kind,
+    url,
+    ...(name ? { name, fileName: name } : {}),
+    ...(mimeType ? { mimeType, contentType: mimeType } : {}),
+    ...(size !== undefined ? { size } : {}),
+    ...(asset ? { asset } : {}),
+  };
+}
+
 function buildBotChatReplyMetadata(
   metadata: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
@@ -258,4 +419,27 @@ async function waitForAbort(signal?: AbortSignal): Promise<void> {
   await new Promise<void>((resolve) => {
     signal.addEventListener("abort", () => resolve(), { once: true });
   });
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
 }

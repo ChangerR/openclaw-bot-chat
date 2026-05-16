@@ -72,7 +72,7 @@ export function createBotChatPluginBase(params: {
     meta: { ...getChatChannelMeta(BOT_CHAT_CHANNEL_ID) },
     capabilities: {
       chatTypes: ["direct", "channel"],
-      media: false,
+      media: true,
       polls: false,
       reactions: false,
       threads: false,
