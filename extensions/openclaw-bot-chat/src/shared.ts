@@ -94,6 +94,7 @@ export function createBotChatPluginBase(params: {
         backendUrl: account.backendUrl,
         botId: account.botId,
         mqttTcpUrl: account.mqttTcpUrl,
+        mqttWsUrl: account.mqttWsUrl,
       }),
       hasConfiguredState: ({ cfg, env }) => hasBotChatConfiguredState({ cfg, env }),
       resolveAllowFrom: ({ cfg, accountId }) => resolveBotChatAccount(cfg, accountId).config.allowFrom,

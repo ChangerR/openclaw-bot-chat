@@ -35,12 +35,14 @@ test('normalizeBotChatConfig falls back to env and defaults', () => {
     BOT_CHAT_BOT_KEY: 'secret-key',
     BOT_CHAT_BOT_ID: 'bot-1',
     BOT_CHAT_MQTT_TCP_URL: 'mqtt://localhost:1883',
+    BOT_CHAT_MQTT_WS_URL: 'wss://localhost/mqtt',
   });
 
   assert.equal(config.backendUrl, 'http://localhost:8080');
   assert.equal(config.botKey, 'secret-key');
   assert.equal(config.botId, 'bot-1');
   assert.equal(config.mqttTcpUrl, 'mqtt://localhost:1883');
+  assert.equal(config.mqttWsUrl, 'wss://localhost/mqtt');
   assert.equal(config.historyCatchupLimit, 100);
   assert.equal(config.enabled, true);
 });
@@ -125,6 +127,17 @@ test('outbound target builder maps direct and channel targets', () => {
     chatType: 'channel',
     publishTopic: 'chat/group/group-1',
     recipientType: 'group',
+  });
+  assert.deepEqual(buildBotChatOutboundMessageTarget({
+    raw: 'channel:chat/dm/user/alice/bot/bot-a',
+    account,
+  }), {
+    channelId: 'chat/dm/user/alice/bot/bot-a',
+    userId: 'alice',
+    normalizedTarget: 'channel:chat/dm/user/alice/bot/bot-a',
+    chatType: 'channel',
+    publishTopic: 'chat/dm/user/alice/bot/bot-a',
+    recipientType: 'user',
   });
   assert.deepEqual(
     buildBotChatOutboundMessageTarget({
@@ -226,6 +239,28 @@ test('normalize inbound payload accepts thread hints from content metadata', () 
   assert.equal(message.metadata.replyToId, 'm-meta');
 });
 
+test('normalize inbound payload accepts text aliases', () => {
+  const contentTextMessage = normalizeBotChatInboundMessage(
+    {
+      conversation_id: 'conv-1',
+      from: { id: 'user-1' },
+      content: { text: 'hello from content text' },
+    },
+    'topic/inbound',
+  );
+  const topLevelTextMessage = normalizeBotChatInboundMessage(
+    {
+      conversation_id: 'conv-1',
+      from: { id: 'user-1' },
+      text: 'hello from top-level text',
+    },
+    'topic/inbound',
+  );
+
+  assert.equal(contentTextMessage.text, 'hello from content text');
+  assert.equal(topLevelTextMessage.text, 'hello from top-level text');
+});
+
 test('outbound payload preserves text, target ids, and thread metadata', () => {
   const payload = JSON.parse(
     buildBotChatOutboundPayload({
@@ -236,6 +271,7 @@ test('outbound payload preserves text, target ids, and thread metadata', () => {
         topic: 'topic/out',
         threadId: 'thread-2',
         replyToId: 'm1',
+        message_id: '11111111-2222-4333-8444-555555555555',
         botId: 'bot-2',
         toType: 'group',
         publishTopic: 'internal-topic',
@@ -244,6 +280,7 @@ test('outbound payload preserves text, target ids, and thread metadata', () => {
   );
 
   assert.equal(payload.conversation_id, 'conv-2');
+  assert.equal(payload.id, '11111111-2222-4333-8444-555555555555');
   assert.equal(payload.thread_id, 'thread-2');
   assert.equal(payload.reply_to_id, 'm1');
   assert.equal(payload.from.id, 'bot-2');
@@ -251,6 +288,7 @@ test('outbound payload preserves text, target ids, and thread metadata', () => {
   assert.equal(payload.to.id, 'user-2');
   assert.equal(payload.content.body, 'reply');
   assert.equal(payload.content.meta.topic, 'topic/out');
+  assert.equal(payload.content.meta.message_id, '11111111-2222-4333-8444-555555555555');
   assert.equal('botId' in payload.content.meta, false);
   assert.equal('toType' in payload.content.meta, false);
   assert.equal('publishTopic' in payload.content.meta, false);
@@ -419,16 +457,17 @@ test('outbound adapter uses parsed BotChat target mapping', async () => {
     async onInboundMessage() {},
     async sendToChannel(message) {
       sent.push(message);
+      return { messageId: `msg-${sent.length}` };
     },
   });
 
   try {
-    await botChatPlugin.outbound.attachedResults.sendText({
+    await botChatPlugin.outbound.sendText({
       cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
       to: 'dm:alice',
       text: 'hello direct',
     });
-    await botChatPlugin.outbound.attachedResults.sendText({
+    await botChatPlugin.outbound.sendText({
       cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
       to: 'channel:conv-1',
       text: 'hello channel',
@@ -462,6 +501,113 @@ test('outbound adapter uses parsed BotChat target mapping', async () => {
         botId: 'bot-a',
         toType: 'user',
         publishTopic: 'conv-1',
+      },
+    },
+  ]);
+});
+
+test('gateway startAccount returns stop handle when host has no abort signal', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let stopped = false;
+  setBotChatRuntime({
+    async start() {},
+    async stop() {
+      stopped = true;
+    },
+    async onInboundMessage() {},
+    async sendToChannel() {
+      return { messageId: 'reply-1' };
+    },
+  });
+
+  try {
+    const result = await botChatPlugin.gateway.startAccount({
+      cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+      account: resolveBotChatAccount({
+        backendUrl: 'http://backend',
+        botKey: 'key',
+        botId: 'bot-a',
+      }),
+    });
+    assert.equal(typeof result?.stop, 'function');
+    await result.stop();
+    assert.equal(stopped, true);
+  } finally {
+    setBotChatRuntime(originalRuntime);
+  }
+});
+
+test('gateway replies do not reuse inbound message ids', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let capturedHooks;
+  const sent = [];
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel(message) {
+      sent.push(message);
+      return { messageId: `reply-${sent.length}` };
+    },
+  });
+
+  const abort = new AbortController();
+  const dispatchCalls = [];
+  const startPromise = botChatPlugin.gateway.startAccount({
+    cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+    account: resolveBotChatAccount({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+    }),
+    abortSignal: abort.signal,
+    channelRuntime: {
+      reply: {
+        async dispatchReplyWithBufferedBlockDispatcher(params) {
+          dispatchCalls.push(params);
+          await params.dispatcherOptions.deliver(
+            { text: 'agent reply' },
+            { kind: 'final' },
+          );
+        },
+      },
+    },
+  });
+
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    await capturedHooks.emitMessage({
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'hi',
+      metadata: {
+        topic: 'chat/dm/user/alice/bot/bot-a',
+        message_id: 'user-message-1',
+        seq: 7,
+        senderType: 'user',
+      },
+    });
+  } finally {
+    abort.abort();
+    await startPromise;
+    setBotChatRuntime(originalRuntime);
+  }
+
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(dispatchCalls[0].ctx.Body, 'hi');
+  assert.deepEqual(sent, [
+    {
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'agent reply',
+      metadata: {
+        topic: 'chat/dm/user/alice/bot/bot-a',
+        replyToId: 'user-message-1',
+        botId: 'bot-a',
+        toType: 'user',
+        publishTopic: 'chat/dm/user/alice/bot/bot-a',
       },
     },
   ]);

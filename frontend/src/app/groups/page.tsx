@@ -57,7 +57,7 @@ export default function GroupsPage() {
       if (group) setSelectedGroup(group)
       setView('chat')
     }
-  }, [currentConversation, refreshMessages, groups])
+  }, [currentConversation?.id, currentConversation?.target.id, currentConversation?.type, refreshMessages, groups])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })

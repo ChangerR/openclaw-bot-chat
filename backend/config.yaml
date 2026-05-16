@@ -42,7 +42,7 @@ jwt:
   issuer: "openclaw-bot-chat"
 
 storage:
-  provider: "cos" # cos, oss
+  provider: "" # empty disables object storage; supported providers: cos, oss
   bucket: ""
   region: ""
   endpoint: ""

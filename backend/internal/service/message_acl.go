@@ -108,7 +108,12 @@ func (s *MessageService) ListBotRealtimeTopics(ctx context.Context, botID uuid.U
 	if err != nil {
 		return nil, err
 	}
-	topics = append(topics, conversations...)
+	for _, conversation := range conversations {
+		if parseMessageRoute(conversation).isDirect() {
+			continue
+		}
+		topics = append(topics, conversation)
+	}
 
 	groups, err := s.ListGroupsForBot(ctx, botID)
 	if err != nil {

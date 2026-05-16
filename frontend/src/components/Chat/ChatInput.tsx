@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import dynamic from 'next/dynamic'
+import { Theme } from 'emoji-picker-react'
 import { Avatar } from '@/components/Avatar'
 import { useChat } from '@/contexts/ChatContext'
 import { assetsApi, groupsApi } from '@/lib/api'
@@ -341,7 +342,7 @@ export function ChatInput({ onSendMessage, disabled, placeholder = 'Type a messa
               <EmojiPicker
                 onEmojiClick={handleEmojiClick}
                 autoFocusSearch={false}
-                theme="light"
+                theme={Theme.LIGHT}
                 width={320}
                 height={400}
                 searchPlaceHolder="Search emoji..."

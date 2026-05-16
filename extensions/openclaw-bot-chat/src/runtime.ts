@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   BOT_CHAT_DEFAULT_ACCOUNT_ID,
   type BotChatChannelConfig,
@@ -13,6 +14,10 @@ export type BotChatMessage = {
   userId: string;
   text: string;
   metadata?: Record<string, unknown>;
+};
+
+export type BotChatSendResult = {
+  messageId: string;
 };
 
 type RuntimeLogger = {
@@ -33,6 +38,7 @@ interface BootstrapResponse {
   client_id?: string;
   broker?: {
     tcp_url?: string;
+    ws_url?: string;
     username?: string;
     password?: string;
     qos?: number;
@@ -58,7 +64,7 @@ export interface BotChatRuntime {
   ): Promise<void>;
   stop(): Promise<void>;
   onInboundMessage(message: BotChatMessage): Promise<void>;
-  sendToChannel(message: BotChatMessage): Promise<void>;
+  sendToChannel(message: BotChatMessage): Promise<BotChatSendResult>;
 }
 
 export function parseBotChatTarget(raw: string): BotChatTarget {
@@ -121,7 +127,10 @@ export function buildBotChatOutboundMessageTarget(params: {
     };
   }
 
-  const userId = readString(params.metadata?.userId) ?? params.account.botId;
+  const userId =
+    readString(params.metadata?.userId) ??
+    inferBotChatDirectUserId(parsed.id, params.account.botId) ??
+    params.account.botId;
   const recipientType = inferBotChatRecipientType(parsed.id);
   return {
     channelId: parsed.id,
@@ -183,6 +192,23 @@ function inferBotChatRecipientType(channelId: string): "user" | "group" {
 
 function isBotChatConversationTopic(value: string): boolean {
   return value.startsWith("chat/dm/") || value.startsWith("chat/group/");
+}
+
+function inferBotChatDirectUserId(value: string, botId: string): string | undefined {
+  const parts = value.split("/");
+  if (parts.length !== 6 || parts[0] !== "chat" || parts[1] !== "dm") {
+    return undefined;
+  }
+
+  const left = { type: parts[2], id: parts[3] };
+  const right = { type: parts[4], id: parts[5] };
+  if (left.type === "user" && right.type === "bot" && right.id === botId) {
+    return left.id;
+  }
+  if (right.type === "user" && left.type === "bot" && left.id === botId) {
+    return right.id;
+  }
+  return undefined;
 }
 
 function omitBotChatInternalMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
@@ -336,6 +362,7 @@ export function normalizeBotChatConfig(
     botKey: readString(input.botKey) ?? env.BOT_CHAT_BOT_KEY,
     botId: readString(input.botId) ?? env.BOT_CHAT_BOT_ID ?? BOT_CHAT_DEFAULT_ACCOUNT_ID,
     mqttTcpUrl: readString(input.mqttTcpUrl) ?? env.BOT_CHAT_MQTT_TCP_URL,
+    mqttWsUrl: readString(input.mqttWsUrl) ?? env.BOT_CHAT_MQTT_WS_URL,
     stateDir: readString(input.stateDir),
     historyCatchupLimit: readNumber(input.historyCatchupLimit) ?? 100,
     defaultTo: readString(input.defaultTo),
@@ -369,6 +396,7 @@ export function resolveBotChatAccount(
     backendUrl: normalized.backendUrl,
     botId: normalized.botId ?? BOT_CHAT_DEFAULT_ACCOUNT_ID,
     mqttTcpUrl: normalized.mqttTcpUrl,
+    mqttWsUrl: normalized.mqttWsUrl,
     config: normalized,
   };
 }
@@ -409,11 +437,18 @@ export function buildBotChatStatePath(config: Record<string, unknown>): string |
 export function buildBotChatOutboundPayload(message: BotChatMessage): string {
   const threadId = readString(message.metadata?.threadId);
   const replyToId = readString(message.metadata?.replyToId);
+  const messageId =
+    readString(message.metadata?.message_id) ??
+    readString(message.metadata?.messageId) ??
+    randomUUID();
   const botId = readString(message.metadata?.botId) ?? BOT_CHAT_DEFAULT_ACCOUNT_ID;
   const toType = readString(message.metadata?.toType) ?? "user";
-  const contentMeta = omitBotChatInternalMetadata(message.metadata ?? {});
+  const contentMeta = {
+    ...omitBotChatInternalMetadata(message.metadata ?? {}),
+    message_id: messageId,
+  };
   return JSON.stringify({
-    id: randomId(),
+    id: messageId,
     conversation_id: message.channelId,
     ...(threadId ? { thread_id: threadId } : {}),
     ...(replyToId ? { reply_to_id: replyToId } : {}),
@@ -464,11 +499,15 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       botId: readString(config.botId),
     });
 
-    const bootstrap = await bootstrapBot(backendUrl, botKey);
+    const bootstrap = await bootstrapBotWithRetry(backendUrl, botKey, logger);
     this.qos = normalizeQos(bootstrap.broker?.qos);
     this.backendUrl = backendUrl;
     this.botKey = botKey;
-    const brokerUrl = readString(config.mqttTcpUrl) ?? readString(bootstrap.broker?.tcp_url);
+    const brokerUrl =
+      readString(config.mqttWsUrl) ??
+      readString(config.mqttTcpUrl) ??
+      readString(bootstrap.broker?.ws_url) ??
+      readString(bootstrap.broker?.tcp_url);
     if (!brokerUrl) {
       throw new Error("mqtt broker url is required");
     }
@@ -494,7 +533,13 @@ class DefaultBotChatRuntime implements BotChatRuntime {
         qos: this.qos,
       });
       for (const topic of subscriptions) {
-        this.mqttClient?.subscribe(topic, { qos: this.qos });
+        this.mqttClient?.subscribe(topic, { qos: this.qos }, (error) => {
+          if (error) {
+            logger.error("botchat.mqtt.subscribe_error", { topic, error: error.message });
+            return;
+          }
+          logger.info("botchat.mqtt.subscribed", { topic, qos: this.qos });
+        });
       }
       void this.recoverHistory(config);
     });
@@ -535,8 +580,9 @@ class DefaultBotChatRuntime implements BotChatRuntime {
     await this.hooks?.emitMessage?.(message);
   }
 
-  async sendToChannel(message: BotChatMessage): Promise<void> {
-    if (!this.mqttClient) {
+  async sendToChannel(message: BotChatMessage): Promise<BotChatSendResult> {
+    const client = this.mqttClient;
+    if (!client) {
       throw new Error("mqtt client is not ready");
     }
 
@@ -545,22 +591,36 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       throw new Error("publish topic is not configured");
     }
 
-    this.mqttClient.publish(
-      topic,
-      buildBotChatOutboundPayload({
-        ...message,
-        channelId: topic,
-        metadata: {
-          ...(message.metadata ?? {}),
-          topic,
-        },
-      }),
-      { qos: this.qos },
-    );
+    const messageId =
+      readString(message.metadata?.messageId) ??
+      readString(message.metadata?.message_id) ??
+      randomUUID();
+
+    const payload = buildBotChatOutboundPayload({
+      ...message,
+      channelId: topic,
+      metadata: {
+        ...(message.metadata ?? {}),
+        message_id: messageId,
+        topic,
+      },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      client.publish(topic, payload, { qos: this.qos }, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
     this.logger?.debug?.("botchat.runtime.outbound", {
       topic,
       channelId: message.channelId,
+      messageId,
     });
+    return { messageId };
   }
 
   private resolvePublishTopic(message: BotChatMessage): string | undefined {
@@ -590,6 +650,12 @@ class DefaultBotChatRuntime implements BotChatRuntime {
       logger.warn("botchat.inbound.invalid_payload", { topic });
       return;
     }
+    logger.info("botchat.inbound.received", {
+      topic,
+      channelId: message.channelId,
+      userId: message.userId,
+      senderType: message.metadata?.senderType,
+    });
 
     const access = evaluateBotChatAccess({ config, message });
     if (!access.allowed) {
@@ -634,6 +700,10 @@ class DefaultBotChatRuntime implements BotChatRuntime {
   }
 
   private async acceptInboundMessage(message: BotChatMessage): Promise<void> {
+    this.logger?.info("botchat.inbound.accepted", {
+      channelId: message.channelId,
+      userId: message.userId,
+    });
     await this.onInboundMessage(message);
     const messageId = readString(message.metadata?.message_id);
     this.checkpoints.set(message.channelId, {
@@ -706,12 +776,24 @@ class DefaultBotChatRuntime implements BotChatRuntime {
 
 let runtimeInstance: BotChatRuntime = new DefaultBotChatRuntime();
 
-export function setBotChatRuntime(runtime: BotChatRuntime): void {
-  runtimeInstance = runtime;
+export function setBotChatRuntime(runtime: unknown): void {
+  if (isBotChatRuntime(runtime)) {
+    runtimeInstance = runtime;
+  }
 }
 
 export function getBotChatRuntime(): BotChatRuntime {
   return runtimeInstance;
+}
+
+function isBotChatRuntime(value: unknown): value is BotChatRuntime {
+  return (
+    isRecord(value) &&
+    typeof value.start === "function" &&
+    typeof value.stop === "function" &&
+    typeof value.onInboundMessage === "function" &&
+    typeof value.sendToChannel === "function"
+  );
 }
 
 interface PermissionApprover {
@@ -778,6 +860,38 @@ async function bootstrapBot(
   return json.data ?? {};
 }
 
+async function bootstrapBotWithRetry(
+  backendUrl: string,
+  botKey: string,
+  logger: RuntimeLogger,
+): Promise<BootstrapResponse> {
+  const attempts = 3;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await bootstrapBot(backendUrl, botKey);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts) {
+        break;
+      }
+      logger.warn("botchat.bootstrap.retry", {
+        attempt,
+        attempts,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await delay(1500 * attempt);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function toInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
   if (!isRecord(raw)) {
     return null;
@@ -785,12 +899,13 @@ function toInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
 
   const channelId = readString(raw.conversation_id) ?? readString(raw.dialog_id) ?? topic;
   const from = isRecord(raw.from) ? raw.from : undefined;
+  const fromType = readString(from?.type) ?? readString(raw.sender_type);
   const content = isRecord(raw.content) ? raw.content : undefined;
   const contentMeta = isRecord(content?.meta) ? content.meta : undefined;
   const messageId = readString(raw.id) ?? readString(raw.message_id);
   const seq = readNumber(raw.seq);
   const userId = readString(from?.id) ?? readString(raw.from_id);
-  const text = readString(content?.body) ?? readString(raw.body);
+  const text = readString(content?.body) ?? readString(content?.text) ?? readString(raw.body) ?? readString(raw.text);
   const threadId =
     readString(raw.thread_id) ?? readString(contentMeta?.threadId) ?? readString(contentMeta?.thread_id);
   const replyToId =
@@ -808,6 +923,7 @@ function toInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
     text,
     metadata: {
       topic,
+      ...(fromType ? { senderType: fromType } : {}),
       ...(messageId ? { message_id: messageId } : {}),
       ...(seq !== undefined ? { seq } : {}),
       ...(contentMeta ?? {}),
@@ -837,10 +953,6 @@ async function fetchConversationMessages(
   }
   const json = (await response.json()) as { data?: unknown[] };
   return Array.isArray(json.data) ? json.data : [];
-}
-
-function randomId(): string {
-  return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function tryParseJson(value: string): unknown {

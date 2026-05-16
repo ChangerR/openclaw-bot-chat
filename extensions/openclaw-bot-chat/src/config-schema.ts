@@ -8,6 +8,7 @@ export const BotChatChannelConfigSchema: Record<string, unknown> = {
     botKey: { type: 'string', minLength: 1 },
     botId: { type: 'string', minLength: 1 },
     mqttTcpUrl: { type: 'string', minLength: 1 },
+    mqttWsUrl: { type: 'string', minLength: 1 },
     stateDir: { type: 'string', minLength: 1 },
     historyCatchupLimit: { type: 'number', minimum: 1, maximum: 1000 },
     defaultTo: { type: 'string', minLength: 1 },
