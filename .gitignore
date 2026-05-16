@@ -9,6 +9,7 @@ Thumbs.db
 
 # Local tooling
 /.codex
+/AGENTS.local.md
 
 # Local agent screenshots
 /*_v*.png
@@ -43,6 +44,8 @@ Thumbs.db
 /plugins/*/dist/
 /plugins/*/data/
 /plugins/*/.test-agent.config.json
+/extensions/*/node_modules/
+/extensions/*/dist/
 
 # Node package manager caches
 .npm/

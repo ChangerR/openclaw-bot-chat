@@ -15,6 +15,7 @@ export const botChatStatus: ChannelStatusAdapter<ResolvedBotChatAccount> = {
       botId: account.botId,
       backendUrl: account.backendUrl,
       mqttTcpUrl: account.mqttTcpUrl,
+      mqttWsUrl: account.mqttWsUrl,
       lastError:
         typeof runtimeState?.lastError === "string" ? runtimeState.lastError : undefined,
       approvalMode: "pairing",
@@ -32,6 +33,7 @@ export const botChatStatus: ChannelStatusAdapter<ResolvedBotChatAccount> = {
     configured: account.configured,
     backendUrl: account.backendUrl,
     mqttTcpUrl: account.mqttTcpUrl,
+    mqttWsUrl: account.mqttWsUrl,
     approvalMode: "pairing",
     allowFromCount: account.config.allowFrom?.length ?? 0,
   }),

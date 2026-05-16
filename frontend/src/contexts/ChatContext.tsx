@@ -210,7 +210,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const refreshMessages = useCallback(
     async (conversationId: string) => {
-      const conversation = conversations.find((item) => item.id === conversationId)
+      const conversation = conversationsRef.current.find((item) => item.id === conversationId)
       if (!conversation) return
 
       const loadedMessages = await Promise.all(
@@ -245,7 +245,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         lastSeqByConversationRef.current.set(conversationId, highestSeq)
       }
     },
-    [conversations, mergeConversationMessages],
+    [mergeConversationMessages],
   )
 
   const catchupConversation = useCallback(
@@ -435,6 +435,15 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       cancelled = true
     }
   }, [isAuthenticated, refreshBots, refreshConversations, refreshGroups, user])
+
+  useEffect(() => {
+    return () => {
+      for (const [, unsubscribe] of subscriptionsRef.current.entries()) {
+        unsubscribe()
+      }
+      subscriptionsRef.current.clear()
+    }
+  }, [])
 
   useEffect(() => {
     if (!user) return

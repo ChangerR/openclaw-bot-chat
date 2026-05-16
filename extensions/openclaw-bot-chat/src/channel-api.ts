@@ -10,6 +10,7 @@ export type BotChatChannelConfig = {
   botKey?: string;
   botId?: string;
   mqttTcpUrl?: string;
+  mqttWsUrl?: string;
   stateDir?: string;
   historyCatchupLimit?: number;
   defaultTo?: string;
@@ -53,6 +54,7 @@ export type ResolvedBotChatAccount = {
   backendUrl?: string;
   botId: string;
   mqttTcpUrl?: string;
+  mqttWsUrl?: string;
   config: BotChatChannelConfig;
 };
 
@@ -116,6 +118,7 @@ export type BotChatStatusSnapshot = {
   botId: string;
   backendUrl?: string;
   mqttTcpUrl?: string;
+  mqttWsUrl?: string;
   lastError?: string;
   approvalMode: "pairing" | "custom-approval";
   allowFromCount: number;
@@ -144,6 +147,7 @@ export type ChannelGatewayAdapter<ResolvedAccount> = {
       error?(message: string, fields?: Record<string, unknown>): void;
       debug?(message: string, fields?: Record<string, unknown>): void;
     };
+    abortSignal?: AbortSignal;
     runtimeState?: Record<string, unknown>;
     setStatus?: (patch: Record<string, unknown>) => void;
     channelRuntime?: {
@@ -153,30 +157,39 @@ export type ChannelGatewayAdapter<ResolvedAccount> = {
         text: string;
         metadata?: Record<string, unknown>;
       }) => Promise<void>;
+      reply?: {
+        dispatchReplyWithBufferedBlockDispatcher?: (params: {
+          ctx: Record<string, unknown>;
+          cfg: Record<string, unknown>;
+          dispatcherOptions: {
+            deliver: (payload: { text?: string }, info?: { kind?: string }) => Promise<void>;
+            onError?: (error: unknown, info?: { kind?: string }) => void;
+            onSkip?: (payload: unknown, info?: { kind?: string; reason?: string }) => void;
+          };
+        }) => Promise<unknown>;
+      };
     };
   }) => Promise<void | { stop?: () => Promise<void> }>;
 };
 
 export type ChannelOutboundAdapter = {
-  base: {
-    deliveryMode: "direct" | "queue";
-    textChunkLimit?: number;
-  };
-  attachedResults: {
+  deliveryMode: "direct" | "gateway" | "hybrid";
+  textChunkLimit?: number;
+  sendText: (params: {
+    cfg: Record<string, unknown>;
+    to: string;
+    text: string;
+    accountId?: string | null;
+    metadata?: Record<string, unknown>;
+  }) => Promise<{
     channel: string;
-    sendText: (params: {
-      cfg: Record<string, unknown>;
-      to: string;
-      text: string;
-      accountId?: string;
-      metadata?: Record<string, unknown>;
-    }) => Promise<{
-      ok: true;
-      channel: string;
-      channelId: string;
-      text: string;
-    }>;
-  };
+    messageId: string;
+    channelId?: string;
+    roomId?: string;
+    conversationId?: string;
+    timestamp?: number;
+    meta?: Record<string, unknown>;
+  }>;
 };
 
 export type ChannelPairingAdapter = {

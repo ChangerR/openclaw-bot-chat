@@ -58,7 +58,7 @@ export default function BotsPage() {
       if (bot) setSelectedBot(bot)
       setView('chat')
     }
-  }, [currentConversation, refreshMessages, bots])
+  }, [currentConversation?.id, currentConversation?.target.id, currentConversation?.type, refreshMessages, bots])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })

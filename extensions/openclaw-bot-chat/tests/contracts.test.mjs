@@ -37,6 +37,7 @@ test('manifest matches top-level bundled channel shape', () => {
   assert.equal(manifest.id, 'bot-chat');
   assert.deepEqual(manifest.channels, ['bot-chat']);
   assert.ok(manifest.channelEnvVars['bot-chat'].includes('BOT_CHAT_BOT_KEY'));
+  assert.ok(manifest.configSchema.properties.mqttWsUrl);
   assert.equal(manifest.configSchema.type, 'object');
   assert.equal(manifest.configSchema.additionalProperties, false);
 });
