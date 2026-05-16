@@ -613,6 +613,106 @@ test('gateway replies do not reuse inbound message ids', async () => {
   ]);
 });
 
+test('gateway dispatch includes BotChat image assets as attachments', async () => {
+  const originalRuntime = getBotChatRuntime();
+  let capturedHooks;
+  setBotChatRuntime({
+    async start(_config, _logger, hooks) {
+      capturedHooks = hooks;
+    },
+    async stop() {},
+    async onInboundMessage() {},
+    async sendToChannel() {
+      return { messageId: 'unused-reply' };
+    },
+  });
+
+  const abort = new AbortController();
+  const dispatchCalls = [];
+  const startPromise = botChatPlugin.gateway.startAccount({
+    cfg: { backendUrl: 'http://backend', botKey: 'key', botId: 'bot-a' },
+    account: resolveBotChatAccount({
+      backendUrl: 'http://backend',
+      botKey: 'key',
+      botId: 'bot-a',
+    }),
+    abortSignal: abort.signal,
+    channelRuntime: {
+      reply: {
+        async dispatchReplyWithBufferedBlockDispatcher(params) {
+          dispatchCalls.push(params);
+        },
+      },
+    },
+  });
+
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    await capturedHooks.emitMessage({
+      channelId: 'chat/dm/user/alice/bot/bot-a',
+      userId: 'alice',
+      text: 'photo.png',
+      metadata: {
+        topic: 'chat/dm/user/alice/bot/bot-a',
+        message_id: 'image-message-1',
+        senderType: 'user',
+        content_type: 'image',
+        asset: {
+          id: 'asset-1',
+          kind: 'image',
+          file_name: 'photo.png',
+          mime_type: 'image/png',
+          size: 1234,
+          download_url: 'https://assets.example/openclaw-assets/photo.png?signature=ok',
+        },
+      },
+    });
+  } finally {
+    abort.abort();
+    await startPromise;
+    setBotChatRuntime(originalRuntime);
+  }
+
+  assert.equal(dispatchCalls.length, 1);
+  const ctx = dispatchCalls[0].ctx;
+  assert.equal(
+    ctx.Body,
+    '<media:image> Attachment URL: https://assets.example/openclaw-assets/photo.png?signature=ok',
+  );
+  assert.equal(ctx.BodyForAgent, ctx.Body);
+  assert.equal(ctx.RawBody, '');
+  assert.equal(ctx.CommandBody, '');
+  assert.equal(ctx.BodyForCommands, '');
+  assert.equal(ctx.MediaUrl, 'https://assets.example/openclaw-assets/photo.png?signature=ok');
+  assert.deepEqual(ctx.MediaUrls, ['https://assets.example/openclaw-assets/photo.png?signature=ok']);
+  assert.equal(ctx.MediaType, 'image/png');
+  assert.deepEqual(ctx.MediaTypes, ['image/png']);
+  assert.equal(ctx.HasAttachments, true);
+  assert.equal(ctx.AttachmentCount, 1);
+  assert.deepEqual(ctx.Attachments, ctx.attachments);
+  assert.deepEqual(ctx.Media, ctx.media);
+  assert.deepEqual(ctx.Attachments, [
+    {
+      type: 'image',
+      kind: 'image',
+      url: 'https://assets.example/openclaw-assets/photo.png?signature=ok',
+      name: 'photo.png',
+      fileName: 'photo.png',
+      mimeType: 'image/png',
+      contentType: 'image/png',
+      size: 1234,
+      asset: {
+        id: 'asset-1',
+        kind: 'image',
+        file_name: 'photo.png',
+        mime_type: 'image/png',
+        size: 1234,
+        download_url: 'https://assets.example/openclaw-assets/photo.png?signature=ok',
+      },
+    },
+  ]);
+});
+
 test('history catchup URL uses bot-runtime endpoint', () => {
   assert.equal(
     buildBotChatHistoryMessagesUrl({

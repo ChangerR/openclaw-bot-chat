@@ -29,7 +29,27 @@ func NewProvider(cfg config.StorageConfig) (ObjectStorageProvider, error) {
 			AccessKeySecret: cfg.OSS.AccessKeySecret,
 			SecurityToken:   cfg.OSS.SecurityToken,
 		})
+	case "s3":
+		return NewS3Provider(S3Config{
+			Bucket:         firstNonEmpty(cfg.S3.Bucket, cfg.Bucket),
+			Region:         firstNonEmpty(cfg.S3.Region, cfg.Region),
+			Endpoint:       firstNonEmpty(cfg.S3.Endpoint, cfg.Endpoint),
+			PublicEndpoint: cfg.S3.PublicEndpoint,
+			AccessKey:      cfg.S3.AccessKey,
+			SecretKey:      cfg.S3.SecretKey,
+			SSL:            cfg.S3.SSL,
+		})
 	default:
 		return nil, fmt.Errorf("unsupported storage provider: %s", cfg.Provider)
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

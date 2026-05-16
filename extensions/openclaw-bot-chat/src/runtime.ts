@@ -901,6 +901,8 @@ function toInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
   const from = isRecord(raw.from) ? raw.from : undefined;
   const fromType = readString(from?.type) ?? readString(raw.sender_type);
   const content = isRecord(raw.content) ? raw.content : undefined;
+  const contentType =
+    readString(content?.type) ?? readString(raw.content_type) ?? readString(raw.msg_type);
   const contentMeta = isRecord(content?.meta) ? content.meta : undefined;
   const messageId = readString(raw.id) ?? readString(raw.message_id);
   const seq = readNumber(raw.seq);
@@ -924,6 +926,7 @@ function toInboundMessage(raw: unknown, topic: string): BotChatMessage | null {
     metadata: {
       topic,
       ...(fromType ? { senderType: fromType } : {}),
+      ...(contentType ? { content_type: contentType } : {}),
       ...(messageId ? { message_id: messageId } : {}),
       ...(seq !== undefined ? { seq } : {}),
       ...(contentMeta ?? {}),

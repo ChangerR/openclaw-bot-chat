@@ -91,6 +91,7 @@ type StorageConfig struct {
 	KeyPrefix      string           `mapstructure:"key_prefix"`
 	COS            COSStorageConfig `mapstructure:"cos"`
 	OSS            OSSStorageConfig `mapstructure:"oss"`
+	S3             S3StorageConfig  `mapstructure:"s3"`
 }
 
 type COSStorageConfig struct {
@@ -103,6 +104,16 @@ type OSSStorageConfig struct {
 	AccessKeyID     string `mapstructure:"access_key_id"`
 	AccessKeySecret string `mapstructure:"access_key_secret"`
 	SecurityToken   string `mapstructure:"security_token"`
+}
+
+type S3StorageConfig struct {
+	Endpoint       string `mapstructure:"endpoint"`
+	PublicEndpoint string `mapstructure:"public_endpoint"`
+	Region         string `mapstructure:"region"`
+	Bucket         string `mapstructure:"bucket"`
+	AccessKey      string `mapstructure:"access_key"`
+	SecretKey      string `mapstructure:"secret_key"`
+	SSL            bool   `mapstructure:"ssl"`
 }
 
 type AssetConfig struct {
@@ -184,6 +195,13 @@ func Load(configPath string) (*Config, error) {
 		"storage.oss.access_key_id",
 		"storage.oss.access_key_secret",
 		"storage.oss.security_token",
+		"storage.s3.endpoint",
+		"storage.s3.public_endpoint",
+		"storage.s3.region",
+		"storage.s3.bucket",
+		"storage.s3.access_key",
+		"storage.s3.secret_key",
+		"storage.s3.ssl",
 		"asset.max_image_size_mb",
 		"log.level",
 		"log.format",
