@@ -155,20 +155,29 @@ struct Asset: Codable {
     var id: String?
     var kind: String?
     var status: String?
+    var storageProvider: String?
+    var bucket: String?
     var objectKey: String?
     var mimeType: String?
     var size: Int?
     var fileName: String?
+    var width: Int?
+    var height: Int?
+    var sha256: String?
     var downloadURL: String?
+    var downloadURLExpiresAt: Date?
     var externalURL: String?
     var sourceURL: String?
+    var metadata: [String: AnyCodable]?
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, status, size
+        case id, kind, status, bucket, size, width, height, sha256, metadata
+        case storageProvider = "storage_provider"
         case objectKey = "object_key"
         case mimeType = "mime_type"
         case fileName = "file_name"
         case downloadURL = "download_url"
+        case downloadURLExpiresAt = "download_url_expires_at"
         case externalURL = "external_url"
         case sourceURL = "source_url"
     }
@@ -401,7 +410,51 @@ struct RealtimeMessagePayload: Codable {
 
     enum CodingKeys: String, CodingKey {
         case id, topic, timestamp, from, to, content, seq
+        case messageId = "message_id"
         case conversationId = "conversation_id"
+    }
+
+    init(id: String,
+         topic: String,
+         conversationId: String,
+         timestamp: Int64,
+         from: MessagePeerPayload,
+         to: MessagePeerPayload,
+         content: RealtimeContentPayload,
+         seq: Int64?) {
+        self.id = id
+        self.topic = topic
+        self.conversationId = conversationId
+        self.timestamp = timestamp
+        self.from = from
+        self.to = to
+        self.content = content
+        self.seq = seq
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id)
+            ?? container.decode(String.self, forKey: .messageId)
+        topic = try container.decodeIfPresent(String.self, forKey: .topic) ?? ""
+        conversationId = try container.decodeIfPresent(String.self, forKey: .conversationId) ?? topic
+        timestamp = try container.decode(Int64.self, forKey: .timestamp)
+        from = try container.decode(MessagePeerPayload.self, forKey: .from)
+        to = try container.decode(MessagePeerPayload.self, forKey: .to)
+        content = try container.decode(RealtimeContentPayload.self, forKey: .content)
+        seq = try container.decodeIfPresent(Int64.self, forKey: .seq)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(topic, forKey: .topic)
+        try container.encode(conversationId, forKey: .conversationId)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(from, forKey: .from)
+        try container.encode(to, forKey: .to)
+        try container.encode(content, forKey: .content)
+        try container.encodeIfPresent(seq, forKey: .seq)
     }
 }
 
@@ -486,6 +539,12 @@ extension Asset {
         if let status, !status.isEmpty {
             dictionary["status"] = AnyCodable(status)
         }
+        if let storageProvider, !storageProvider.isEmpty {
+            dictionary["storage_provider"] = AnyCodable(storageProvider)
+        }
+        if let bucket, !bucket.isEmpty {
+            dictionary["bucket"] = AnyCodable(bucket)
+        }
         if let objectKey, !objectKey.isEmpty {
             dictionary["object_key"] = AnyCodable(objectKey)
         }
@@ -498,14 +557,29 @@ extension Asset {
         if let fileName, !fileName.isEmpty {
             dictionary["file_name"] = AnyCodable(fileName)
         }
+        if let width {
+            dictionary["width"] = AnyCodable(width)
+        }
+        if let height {
+            dictionary["height"] = AnyCodable(height)
+        }
+        if let sha256, !sha256.isEmpty {
+            dictionary["sha256"] = AnyCodable(sha256)
+        }
         if let downloadURL, !downloadURL.isEmpty {
             dictionary["download_url"] = AnyCodable(downloadURL)
+        }
+        if let downloadURLExpiresAt {
+            dictionary["download_url_expires_at"] = AnyCodable(Self.assetDateFormatter.string(from: downloadURLExpiresAt))
         }
         if let externalURL, !externalURL.isEmpty {
             dictionary["external_url"] = AnyCodable(externalURL)
         }
         if let sourceURL, !sourceURL.isEmpty {
             dictionary["source_url"] = AnyCodable(sourceURL)
+        }
+        if let metadata, !metadata.isEmpty {
+            dictionary["metadata"] = AnyCodable(metadata)
         }
 
         return AnyCodable(dictionary)
@@ -525,8 +599,42 @@ extension Asset {
             return nil
         }
 
-        return try? JSONDecoder().decode(Asset.self, from: data)
+        return try? Self.assetJSONDecoder.decode(Asset.self, from: data)
     }
+
+    private static let assetDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let assetJSONDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+
+            if let seconds = try? container.decode(Double.self) {
+                return Date(timeIntervalSince1970: seconds)
+            }
+
+            let raw = try container.decode(String.self)
+            if let date = Asset.assetDateFormatter.date(from: raw) {
+                return date
+            }
+
+            let fallbackFormatter = ISO8601DateFormatter()
+            fallbackFormatter.formatOptions = [.withInternetDateTime]
+            if let date = fallbackFormatter.date(from: raw) {
+                return date
+            }
+
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid asset date"
+            )
+        }
+        return decoder
+    }()
 }
 
 extension MessageContent {

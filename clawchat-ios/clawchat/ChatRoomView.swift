@@ -47,12 +47,20 @@ class ChatRoomViewModel: ObservableObject {
             .assign(to: &$connectionState)
 
         RealtimeService.shared.messagePublisher
-            .filter { $0.conversationId == self.conversationId }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] message in
-                self?.handleIncomingMessage(message)
+                guard let self else { return }
+                guard Self.matchesConversation(message: message, conversationId: self.conversationId) else {
+                    print(
+                        "MQTT TRACE ui ignored message_id=\(message.id) current_conversation=\(self.conversationId) message_conversation=\(message.conversationId) message_topic=\(message.topic)"
+                    )
+                    return
+                }
+
+                self.handleIncomingMessage(message)
             }
             .store(in: &cancellables)
+
     }
 
     deinit {
@@ -110,6 +118,9 @@ class ChatRoomViewModel: ObservableObject {
     }
 
     private func handleIncomingMessage(_ message: Message) {
+        print(
+            "MQTT TRACE ui accepted message_id=\(message.id) conversation_id=\(message.conversationId) topic=\(message.topic) current_conversation=\(conversationId)"
+        )
         messages = mergeMessages(messages, with: [message])
     }
 
@@ -211,6 +222,16 @@ class ChatRoomViewModel: ObservableObject {
 
             return lhs.id < rhs.id
         }
+    }
+
+    private static func matchesConversation(message: Message, conversationId: String) -> Bool {
+        let expected = normalizedConversationReference(conversationId)
+        return normalizedConversationReference(message.conversationId) == expected
+            || normalizedConversationReference(message.topic) == expected
+    }
+
+    private static func normalizedConversationReference(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func updateHistoryAvailability() {

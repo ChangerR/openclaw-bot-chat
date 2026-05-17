@@ -7,7 +7,7 @@ class APIClient {
 
     private let session: URLSession
 
-    init(session: URLSession = .shared, baseURL: URL = URL(string: "https://test.iotdevices.site")!) {
+    init(session: URLSession = .shared, baseURL: URL = URL(string: "https://clawchat.changer.site")!) {
         self.session = session
         self.baseURL = baseURL
     }

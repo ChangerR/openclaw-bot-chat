@@ -7,6 +7,12 @@ Thumbs.db
 *.swo
 *~
 
+# Xcode local state
+xcuserdata/
+*.xcuserstate
+WorkspaceSettings.xcsettings
+clawchat-ios/build/
+
 # Local tooling
 /.codex
 /AGENTS.local.md

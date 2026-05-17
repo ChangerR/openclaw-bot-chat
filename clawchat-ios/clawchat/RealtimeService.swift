@@ -3,7 +3,7 @@ import Combine
 import CocoaMQTT
 import CocoaMQTTWebSocket
 
-enum RealtimeConnectionState {
+enum RealtimeConnectionState: Equatable {
     case idle, connecting, connected, disconnected
 }
 
@@ -17,8 +17,10 @@ class RealtimeService: NSObject, ObservableObject {
 
     private var bootstrap: RealtimeBootstrapResponse?
     private var cancellables = Set<AnyCancellable>()
-    private var mqttClient: CocoaMQTT5?
+    private var mqttClient: CocoaMQTT?
     private var activeConversationID: String?
+    private var requestedTopics = Set<String>()
+    private var subscribedTopics = Set<String>()
     private var retryWorkItem: DispatchWorkItem?
     private let retryDelay: TimeInterval = 3
 
@@ -31,21 +33,31 @@ class RealtimeService: NSObject, ObservableObject {
     }
 
     func start() {
-        guard AuthManager.shared.isAuthenticated else { return }
-        guard connectionState != .connected && connectionState != .connecting else { return }
+        guard AuthManager.shared.isAuthenticated else {
+            log("start skipped: user is not authenticated")
+            return
+        }
+        guard connectionState != .connected && connectionState != .connecting else {
+            log("start skipped: current state=\(connectionState)")
+            return
+        }
 
         cancelRetry()
+        log("bootstrap request started")
 
         fetchBootstrap()
             .sink { [weak self] completion in
                 if case .failure(let error) = completion {
-                    print("Realtime bootstrap failed: \(error)")
+                    self?.log("bootstrap failed: \(error)")
                     DispatchQueue.main.async {
                         self?.connectionState = .disconnected
                     }
                     self?.scheduleRetry(reason: "bootstrap_failed")
                 }
             } receiveValue: { [weak self] bootstrap in
+                self?.log(
+                    "bootstrap ok client_id=\(bootstrap.clientId) broker_ws=\(bootstrap.broker.wsPublicURL) qos=\(bootstrap.broker.qos ?? -1) subscriptions=\(bootstrap.subscriptions.count) topics=\(self?.topicListDescription(bootstrap.subscriptions.map(\.topic)) ?? "[]")"
+                )
                 self?.bootstrap = bootstrap
                 self?.connect(using: bootstrap)
             }
@@ -53,18 +65,43 @@ class RealtimeService: NSObject, ObservableObject {
     }
 
     func stop() {
+        log("stop requested")
         cancelRetry()
         mqttClient?.disconnect()
         mqttClient = nil
         activeConversationID = nil
+        requestedTopics.removeAll()
+        subscribedTopics.removeAll()
         connectionState = .idle
     }
 
     func setActiveConversation(_ conversationID: String?) {
         activeConversationID = conversationID
+        log("active conversation set to \(conversationID ?? "<nil>")")
         if let conversationID {
+            ensureSubscribed(to: conversationID)
             LocalMessageStore.shared.markConversationRead(conversationId: conversationID)
         }
+    }
+
+    func ensureSubscribed(to topic: String, qos: Int? = nil) {
+        let normalizedTopic = normalizedTopic(topic)
+        guard !normalizedTopic.isEmpty else { return }
+
+        let wasRequested = requestedTopics.contains(normalizedTopic)
+        requestedTopics.insert(normalizedTopic)
+
+        guard connectionState == .connected,
+              let mqttClient,
+              !subscribedTopics.contains(normalizedTopic)
+        else {
+            log(
+                "subscribe deferred topic=\(normalizedTopic) was_requested=\(wasRequested) state=\(connectionState) has_client=\(mqttClient != nil) already_subscribed=\(subscribedTopics.contains(normalizedTopic))"
+            )
+            return
+        }
+
+        subscribe(topic: normalizedTopic, qos: qos ?? bootstrap?.broker.qos ?? 1, using: mqttClient)
     }
 
     private func fetchBootstrap() -> AnyPublisher<RealtimeBootstrapResponse, Error> {
@@ -74,7 +111,7 @@ class RealtimeService: NSObject, ObservableObject {
     private func connect(using bootstrap: RealtimeBootstrapResponse) {
         cancelRetry()
         guard let url = resolvedBrokerWebSocketURL(from: bootstrap.broker.wsPublicURL), let host = url.host else {
-            print("Realtime MQTT URL invalid: \(bootstrap.broker.wsPublicURL)")
+            log("connect failed: invalid broker ws_url=\(bootstrap.broker.wsPublicURL)")
             connectionState = .disconnected
             return
         }
@@ -83,6 +120,7 @@ class RealtimeService: NSObject, ObservableObject {
 
         mqttClient?.disconnect()
         mqttClient = nil
+        subscribedTopics.removeAll()
 
         let secureSchemes = Set(["wss", "https"])
         let isSecure = secureSchemes.contains((url.scheme ?? "").lowercased())
@@ -92,18 +130,21 @@ class RealtimeService: NSObject, ObservableObject {
         let websocket = CocoaMQTTWebSocket(uri: url.path.isEmpty ? "/mqtt" : url.path)
         websocket.enableSSL = isSecure
 
-        let mqtt = CocoaMQTT5(clientID: bootstrap.clientId, host: host, port: UInt16(port), socket: websocket)
+        let mqtt = CocoaMQTT(clientID: bootstrap.clientId, host: host, port: UInt16(port), socket: websocket)
         mqtt.username = bootstrap.broker.username
         mqtt.password = bootstrap.broker.password
         mqtt.keepAlive = 60
         mqtt.autoReconnect = true
+        mqtt.cleanSession = true
         mqtt.didReceiveTrust = { _, _, completionHandler in
             completionHandler(true)
         }
         mqtt.delegate = self
 
         mqttClient = mqtt
-        print("Connecting MQTT via \(url.absoluteString) as \(bootstrap.clientId)")
+        log(
+            "connect start url=\(url.absoluteString) host=\(host) port=\(port) path=\(url.path.isEmpty ? "/mqtt" : url.path) ssl=\(isSecure) client_id=\(bootstrap.clientId) username_set=\(bootstrap.broker.username != nil)"
+        )
         _ = mqtt.connect()
     }
 
@@ -131,7 +172,7 @@ class RealtimeService: NSObject, ObservableObject {
         }
 
         let resolved = components.url ?? fallbackURL
-        print("Realtime broker ws_url \(rawValue) is loopback-only; fallback to \(resolved.absoluteString)")
+        log("broker ws_url \(rawValue) is loopback-only; fallback to \(resolved.absoluteString)")
         return resolved
     }
 
@@ -158,11 +199,16 @@ class RealtimeService: NSObject, ObservableObject {
 
     @discardableResult
     func sendMessage(conversationId: String, content: RealtimeContentPayload, topic: String) -> Bool {
-        guard let mqttClient, let user = AuthManager.shared.currentUser else { return false }
+        guard let mqttClient, let user = AuthManager.shared.currentUser else {
+            log("publish blocked: has_client=\(mqttClient != nil) has_user=\(AuthManager.shared.currentUser != nil)")
+            return false
+        }
+
+        ensureSubscribed(to: topic)
 
         let route = MessageRoute(topic: topic)
         guard let target = route.targetForSender(type: "user", id: user.id.uuidString.lowercased()) else {
-            print("Cannot resolve message target for topic: \(topic)")
+            log("publish blocked: cannot resolve message target topic=\(topic)")
             return false
         }
 
@@ -202,12 +248,21 @@ class RealtimeService: NSObject, ObservableObject {
             self.lastMessagesByConversation[conversationId] = optimisticMessage
         }
 
-        guard let jsonData = try? JSONEncoder().encode(payload) else { return false }
-        mqttClient.publish(topic, withString: String(decoding: jsonData, as: UTF8.self), qos: .qos1, properties: MqttPublishProperties())
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            log("publish blocked: failed to encode payload id=\(payload.id) topic=\(topic)")
+            return false
+        }
+        log(
+            "publish topic=\(topic) conversation_id=\(conversationId) message_id=\(payload.id) to=\(target.type)/\(target.id) bytes=\(jsonData.count) subscribed=\(subscribedTopics.contains(topic))"
+        )
+        mqttClient.publish(topic, withString: String(decoding: jsonData, as: UTF8.self), qos: .qos1)
         return true
     }
 
     private func handleRealtimePayload(_ payload: RealtimeMessagePayload) {
+        log(
+            "message decoded id=\(payload.id) topic=\(payload.topic) conversation_id=\(payload.conversationId) from=\(payload.from.type)/\(payload.from.id) to=\(payload.to.type)/\(payload.to.id) seq=\(payload.seq.map(String.init) ?? "<nil>")"
+        )
         let message = Message(from: payload)
         LocalMessageStore.shared.upsert(messages: [message])
         LocalMessageStore.shared.syncConversationPreview(
@@ -221,8 +276,28 @@ class RealtimeService: NSObject, ObservableObject {
         }
     }
 
+    private func log(_ message: String) {
+        print("MQTT TRACE \(message)")
+    }
+
+    private func topicListDescription(_ topics: [String]) -> String {
+        if topics.isEmpty {
+            return "[]"
+        }
+
+        let preview = topics.prefix(8).joined(separator: ",")
+        if topics.count <= 8 {
+            return "[\(preview)]"
+        }
+        return "[\(preview),...+\(topics.count - 8)]"
+    }
+
     private func normalizeConversationID(_ value: String?) -> String {
         value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    private func normalizedTopic(_ value: String?) -> String {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     private func normalizedMessageBody(for content: RealtimeContentPayload) -> String {
@@ -250,10 +325,11 @@ class RealtimeService: NSObject, ObservableObject {
         guard connectionState != .connected && connectionState != .connecting else { return }
         guard retryWorkItem == nil else { return }
 
+        log("retry scheduled reason=\(reason) delay=\(retryDelay)")
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.retryWorkItem = nil
-            print("Realtime retry triggered: \(reason)")
+            self.log("retry triggered reason=\(reason)")
             self.start()
         }
         retryWorkItem = workItem
@@ -266,10 +342,10 @@ class RealtimeService: NSObject, ObservableObject {
     }
 }
 
-extension RealtimeService: CocoaMQTT5Delegate {
-    func mqtt5(_ mqtt5: CocoaMQTT5, didConnectAck ack: CocoaMQTTCONNACKReasonCode, connAckData: MqttDecodeConnAck?) {
-        guard ack == .success else {
-            print("MQTT connect rejected with reason: \(ack.rawValue)")
+extension RealtimeService: CocoaMQTTDelegate {
+    func mqtt(_ mqtt: CocoaMQTT, didConnectAck ack: CocoaMQTTConnAck) {
+        guard ack == .accept else {
+            log("connect rejected reason=\(ack.rawValue) description=\(ack)")
             DispatchQueue.main.async {
                 self.connectionState = .disconnected
             }
@@ -278,17 +354,26 @@ extension RealtimeService: CocoaMQTT5Delegate {
         }
 
         cancelRetry()
+        log("connect accepted client_id=\(bootstrap?.clientId ?? "<unknown>")")
         DispatchQueue.main.async {
             self.connectionState = .connected
         }
 
         guard let bootstrap else { return }
+        subscribedTopics.removeAll()
+        log(
+            "subscribing bootstrap_count=\(bootstrap.subscriptions.count) requested_count=\(requestedTopics.count) bootstrap_topics=\(topicListDescription(bootstrap.subscriptions.map(\.topic))) requested_topics=\(topicListDescription(Array(requestedTopics).sorted()))"
+        )
         for sub in bootstrap.subscriptions {
-            mqtt5.subscribe(sub.topic, qos: CocoaMQTTQoS(rawValue: UInt8(sub.qos)) ?? .qos1)
+            subscribe(topic: sub.topic, qos: sub.qos, using: mqtt)
+        }
+        for topic in requestedTopics {
+            subscribe(topic: topic, qos: bootstrap.broker.qos ?? 1, using: mqtt)
         }
     }
 
-    func mqtt5(_ mqtt5: CocoaMQTT5, didStateChangeTo state: CocoaMQTTConnState) {
+    func mqtt(_ mqtt: CocoaMQTT, didStateChangeTo state: CocoaMQTTConnState) {
+        log("state changed to \(state)")
         if state == .disconnected {
             DispatchQueue.main.async {
                 self.connectionState = .disconnected
@@ -297,35 +382,79 @@ extension RealtimeService: CocoaMQTT5Delegate {
         }
     }
 
-    func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveMessage message: CocoaMQTT5Message, id: UInt16, publishData: MqttDecodePublish?) {
-        guard let stringPayload = message.string,
-              let payloadData = stringPayload.data(using: .utf8),
-              let payload = try? JSONDecoder().decode(RealtimeMessagePayload.self, from: payloadData)
-        else { return }
+    func mqtt(_ mqtt: CocoaMQTT, didReceiveMessage message: CocoaMQTTMessage, id: UInt16) {
+        log("receive raw topic=\(message.topic) packet_id=\(id) qos=\(message.qos.rawValue) bytes=\(message.payload.count)")
+        guard let stringPayload = message.string else {
+            log("receive dropped: payload is not utf8 topic=\(message.topic) bytes=\(message.payload.count)")
+            return
+        }
 
-        handleRealtimePayload(payload)
+        guard let payloadData = stringPayload.data(using: .utf8) else {
+            log("receive dropped: failed to convert payload string to data topic=\(message.topic)")
+            return
+        }
+
+        do {
+            let payload = try JSONDecoder().decode(RealtimeMessagePayload.self, from: payloadData)
+            if normalizedTopic(payload.topic).isEmpty || normalizedTopic(payload.topic) != normalizedTopic(message.topic) {
+                log("receive note: mqtt_topic=\(message.topic) payload_topic=\(payload.topic) conversation_id=\(payload.conversationId)")
+            }
+
+            handleRealtimePayload(payload)
+        } catch {
+            log("receive dropped: decode failed topic=\(message.topic) error=\(error)")
+        }
     }
 
-    func mqtt5(_ mqtt5: CocoaMQTT5, didSubscribeTopics success: NSDictionary, failed: [String], subAckData: MqttDecodeSubAck?) {}
-    func mqtt5(_ mqtt5: CocoaMQTT5, didUnsubscribeTopics topics: [String], unsubAckData: MqttDecodeUnsubAck?) {}
-    func mqtt5DidPing(_ mqtt5: CocoaMQTT5) {}
-    func mqtt5DidReceivePong(_ mqtt5: CocoaMQTT5) {}
-    func mqtt5DidDisconnect(_ mqtt5: CocoaMQTT5, withError err: Error?) {
+    private func subscribe(topic: String, qos: Int, using mqtt: CocoaMQTT) {
+        let normalizedTopic = normalizedTopic(topic)
+        guard !normalizedTopic.isEmpty, !subscribedTopics.contains(normalizedTopic) else {
+            log("subscribe skipped topic=\(normalizedTopic) already_subscribed=\(subscribedTopics.contains(normalizedTopic))")
+            return
+        }
+
+        log("subscribe request topic=\(normalizedTopic) qos=\(qos)")
+        mqtt.subscribe(normalizedTopic, qos: CocoaMQTTQoS(rawValue: UInt8(qos)) ?? .qos1)
+    }
+
+    func mqtt(_ mqtt: CocoaMQTT, didSubscribeTopics success: NSDictionary, failed: [String]) {
+        log("subscribe ack success=\(success.allKeys) failed=\(failed)")
+        for key in success.allKeys {
+            if let topic = key as? String {
+                subscribedTopics.insert(topic)
+            }
+        }
+        for topic in failed {
+            subscribedTopics.remove(topic)
+            log("subscribe failed topic=\(topic)")
+        }
+    }
+    func mqtt(_ mqtt: CocoaMQTT, didUnsubscribeTopics topics: [String]) {
+        log("unsubscribe ack topics=\(topics)")
+    }
+    func mqttDidPing(_ mqtt: CocoaMQTT) {
+        log("ping sent")
+    }
+    func mqttDidReceivePong(_ mqtt: CocoaMQTT) {
+        log("pong received")
+    }
+    func mqttDidDisconnect(_ mqtt: CocoaMQTT, withError err: Error?) {
         if let err {
-            print("MQTT disconnected with error: \(err.localizedDescription)")
+            log("disconnected error=\(err.localizedDescription)")
+        } else {
+            log("disconnected without error")
         }
         DispatchQueue.main.async {
             self.connectionState = .disconnected
         }
         scheduleRetry(reason: "socket_disconnected")
     }
-    func mqtt5(_ mqtt5: CocoaMQTT5, didPublishMessage message: CocoaMQTT5Message, id: UInt16) {}
-    func mqtt5(_ mqtt5: CocoaMQTT5, didPublishAck id: UInt16, pubAckData: MqttDecodePubAck?) {}
-    func mqtt5(_ mqtt5: CocoaMQTT5, didPublishRec id: UInt16, pubRecData: MqttDecodePubRec?) {}
-    func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveDisconnectReasonCode reasonCode: CocoaMQTTDISCONNECTReasonCode) {
-        print("MQTT broker disconnect reason: \(reasonCode.rawValue)")
+    func mqtt(_ mqtt: CocoaMQTT, didPublishMessage message: CocoaMQTTMessage, id: UInt16) {
+        log("publish sent packet_id=\(id) topic=\(message.topic) qos=\(message.qos.rawValue) bytes=\(message.payload.count)")
     }
-    func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveAuthReasonCode reasonCode: CocoaMQTTAUTHReasonCode) {}
+    func mqtt(_ mqtt: CocoaMQTT, didPublishAck id: UInt16) {
+        log("publish ack packet_id=\(id)")
+    }
 }
 
 private struct MessageRoute {
