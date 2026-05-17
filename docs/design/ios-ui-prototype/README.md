@@ -32,7 +32,7 @@ flowchart TD
 
 ## 1. Login
 
-![Login](/Users/changer/Desktop/projects/openclaw-bot-chat/docs/design/ios-ui-prototype/01-login.png)
+![Login](./01-login.png)
 
 Purpose: fast return path for existing users.
 
@@ -47,7 +47,7 @@ Implementation notes:
 
 ## 2. Register
 
-![Register](/Users/changer/Desktop/projects/openclaw-bot-chat/docs/design/ios-ui-prototype/02-register.png)
+![Register](./02-register.png)
 
 Purpose: new-account creation with a concise explanation of what the account unlocks.
 
@@ -61,7 +61,7 @@ Implementation notes:
 
 ## 3. Home
 
-![Home](/Users/changer/Desktop/projects/openclaw-bot-chat/docs/design/ios-ui-prototype/03-home.png)
+![Home](./03-home.png)
 
 Purpose: the authenticated landing surface and daily operating dashboard.
 
@@ -76,7 +76,7 @@ Implementation notes:
 
 ## 4. Bot Single Chat
 
-![Bot Single Chat](/Users/changer/Desktop/projects/openclaw-bot-chat/docs/design/ios-ui-prototype/04-bot-single-chat.png)
+![Bot Single Chat](./04-bot-single-chat.png)
 
 Purpose: direct one-to-one chat between the current user and one bot.
 
@@ -92,7 +92,7 @@ Implementation notes:
 
 ## 5. Group Chat
 
-![Group Chat](/Users/changer/Desktop/projects/openclaw-bot-chat/docs/design/ios-ui-prototype/05-group-chat.png)
+![Group Chat](./05-group-chat.png)
 
 Purpose: multi-participant conversation with humans and bots in the same room.
 
@@ -108,7 +108,7 @@ Implementation notes:
 
 ## 6. Settings
 
-![Settings](/Users/changer/Desktop/projects/openclaw-bot-chat/docs/design/ios-ui-prototype/06-settings.png)
+![Settings](./06-settings.png)
 
 Purpose: profile, account security, messaging preferences, system state, and logout.
 
