@@ -5,6 +5,7 @@
 //  Created by Changer Ding on 2026/4/12.
 //
 
+import Foundation
 import Testing
 @testable import clawchat
 

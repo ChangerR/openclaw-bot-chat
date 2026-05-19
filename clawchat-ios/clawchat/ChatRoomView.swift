@@ -12,14 +12,27 @@ struct ChatContext {
     let isGroup: Bool
     let groupId: String?
     let bot: Bot?
+    let memberCount: Int?
+    let avatarURLString: String?
     
-    init(id: String, title: String, subtitle: String, isGroup: Bool, groupId: String? = nil, bot: Bot? = nil) {
+    init(
+        id: String,
+        title: String,
+        subtitle: String,
+        isGroup: Bool,
+        groupId: String? = nil,
+        bot: Bot? = nil,
+        memberCount: Int? = nil,
+        avatarURLString: String? = nil
+    ) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
         self.isGroup = isGroup
         self.groupId = groupId
         self.bot = bot
+        self.memberCount = memberCount
+        self.avatarURLString = avatarURLString
     }
 }
 
@@ -39,27 +52,38 @@ class ChatRoomViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var syncTask: Task<Void, Never>?
 
-    init(conversationId: String) {
+    init(
+        conversationId: String,
+        initialMessages: [Message] = [],
+        initialConnectionState: RealtimeConnectionState? = nil,
+        observesRealtime: Bool = true
+    ) {
         self.conversationId = conversationId
+        self.messages = sortMessages(initialMessages)
+        if let initialConnectionState {
+            self.connectionState = initialConnectionState
+        }
 
-        RealtimeService.shared.$connectionState
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$connectionState)
+        if observesRealtime {
+            RealtimeService.shared.$connectionState
+                .receive(on: DispatchQueue.main)
+                .assign(to: &$connectionState)
 
-        RealtimeService.shared.messagePublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] message in
-                guard let self else { return }
-                guard Self.matchesConversation(message: message, conversationId: self.conversationId) else {
-                    print(
-                        "MQTT TRACE ui ignored message_id=\(message.id) current_conversation=\(self.conversationId) message_conversation=\(message.conversationId) message_topic=\(message.topic)"
-                    )
-                    return
+            RealtimeService.shared.messagePublisher
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] message in
+                    guard let self else { return }
+                    guard Self.matchesConversation(message: message, conversationId: self.conversationId) else {
+                        print(
+                            "MQTT TRACE ui ignored message_id=\(message.id) current_conversation=\(self.conversationId) message_conversation=\(message.conversationId) message_topic=\(message.topic)"
+                        )
+                        return
+                    }
+
+                    self.handleIncomingMessage(message)
                 }
-
-                self.handleIncomingMessage(message)
-            }
-            .store(in: &cancellables)
+                .store(in: &cancellables)
+        }
 
     }
 
@@ -587,6 +611,7 @@ struct ChatRoomView: View {
     @StateObject private var viewModel: ChatRoomViewModel
     @StateObject private var groupVM = GroupMaintenanceViewModel()
     @ObservedObject private var authManager = AuthManager.shared
+    @Environment(\.dismiss) private var dismiss
     @State private var showGroupSheet = false
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var previewMessage: Message?
@@ -594,6 +619,8 @@ struct ChatRoomView: View {
     @State private var scrollViewportHeight: CGFloat = 0
     @State private var topVisibleMessageID: String?
     @State private var isNearBottom = true
+    private let loadsMessagesOnAppear: Bool
+    private let currentUserIDOverride: String?
     private let bottomAnchorID = "chat-room-bottom-anchor"
     private let scrollCoordinateSpaceName = "chat-room-scroll-space"
     private let bottomAutoScrollThreshold: CGFloat = 96
@@ -601,6 +628,8 @@ struct ChatRoomView: View {
 
     init(context: ChatContext) {
         self.context = context
+        self.loadsMessagesOnAppear = true
+        self.currentUserIDOverride = nil
         _viewModel = StateObject(wrappedValue: ChatRoomViewModel(conversationId: context.id))
     }
 
@@ -609,17 +638,29 @@ struct ChatRoomView: View {
         self.init(context: context)
     }
 
+    init(
+        previewContext context: ChatContext,
+        messages: [Message],
+        connectionState: RealtimeConnectionState = .connected,
+        currentUserID: String = "preview-user"
+    ) {
+        self.context = context
+        self.loadsMessagesOnAppear = false
+        self.currentUserIDOverride = currentUserID
+        _viewModel = StateObject(wrappedValue: ChatRoomViewModel(
+            conversationId: context.id,
+            initialMessages: messages,
+            initialConnectionState: connectionState,
+            observesRealtime: false
+        ))
+    }
+
     var body: some View {
         ZStack {
             FrostedBackground()
 
             VStack(spacing: 0) {
-                if viewModel.connectionState != .connected {
-                    Text(viewModel.connectionState == .connecting ? "连接中..." : "已断开")
-                        .font(.caption)
-                        .foregroundStyle(Color.rcmsTextSecondary)
-                        .padding(.vertical, 4)
-                }
+                chatHeader
 
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -627,7 +668,7 @@ struct ChatRoomView: View {
                             ForEach(viewModel.messages) { message in
                                 ChatBubbleRow(
                                     message: message,
-                                    currentUserID: authManager.currentUser?.id.uuidString,
+                                    currentUserID: effectiveCurrentUserID,
                                     showsSenderInfo: context.isGroup,
                                     onPreviewImage: { previewMessage = $0 }
                                 )
@@ -704,33 +745,16 @@ struct ChatRoomView: View {
                 inputBar
             }
         }
-        .navigationTitle(context.title)
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .toolbar {
-            if context.isGroup {
-                Button {
-                    showGroupSheet = true
-                    if let groupId = context.groupId {
-                        groupVM.bootstrap(groupId: groupId, currentName: context.title)
-                    }
-                } label: {
-                    Image(systemName: "gearshape.fill")
-                }
-            } else if let bot = context.bot {
-                NavigationLink(destination: BotSettingsView(bot: bot, onBotUpdated: {
-                    // ChatRoomView doesn't manage the bot list, but the updated bot info 
-                    // will be fetched when returning to BotsView.
-                })) {
-                    Image(systemName: "gearshape.fill")
-                }
-            }
-        }
-                .onAppear {
+        .onAppear {
+            guard loadsMessagesOnAppear else { return }
             RealtimeService.shared.setActiveConversation(context.id)
             viewModel.fetchMessages()
         }
         .onDisappear {
+            guard loadsMessagesOnAppear else { return }
             RealtimeService.shared.setActiveConversation(nil)
         }
         .sheet(isPresented: $showGroupSheet) {
@@ -775,52 +799,116 @@ struct ChatRoomView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
+        .simultaneousGesture(edgeBackGesture)
+    }
+
+    private var chatHeader: some View {
+        ChatChromeHeader(
+            title: context.title,
+            showSettings: context.isGroup || context.bot != nil,
+            onBack: { dismiss() },
+            settingsContent: {
+                settingsAffordance
+            }
+        )
+    }
+
+    private var edgeBackGesture: some Gesture {
+        DragGesture(minimumDistance: 20, coordinateSpace: .local)
+            .onEnded { value in
+                guard value.startLocation.x <= 28 else { return }
+                guard value.translation.width > 72 else { return }
+                guard value.translation.width > Swift.abs(value.translation.height) * 1.4 else { return }
+                dismiss()
+            }
+    }
+
+    @ViewBuilder
+    private var settingsAffordance: some View {
+        if context.isGroup {
+            Button {
+                showGroupSheet = true
+                if let groupId = context.groupId {
+                    groupVM.bootstrap(groupId: groupId, currentName: context.title)
+                }
+            } label: {
+                ChatHeaderIcon(systemName: "gearshape.fill", accessibilityLabel: "群设置")
+            }
+            .buttonStyle(.plain)
+        } else if let bot = context.bot {
+            NavigationLink(destination: BotSettingsView(bot: bot, onBotUpdated: {
+                // ChatRoomView doesn't manage the bot list, but the updated bot info
+                // will be fetched when returning to BotsView.
+            })) {
+                ChatHeaderIcon(systemName: "gearshape.fill", accessibilityLabel: "机器人设置")
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var inputBar: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .bottom, spacing: 8) {
             PhotosPicker(selection: photoPickerSelection, matching: .images) {
-                ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.82))
-                        .frame(width: 42, height: 42)
-
-                    if viewModel.isUploadingImage {
-                        ProgressView()
-                            .tint(Color.rcmsAccent)
-                    } else {
-                        Image(systemName: "photo.on.rectangle.angled")
-                            .foregroundStyle(Color.rcmsAccent)
-                    }
-                }
+                ChatComposerIconButton(systemName: "plus", isUploading: false)
             }
             .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
 
-            TextField("发送消息", text: $viewModel.inputText, axis: .vertical)
-                .focused($isInputFocused)
-                .padding(11)
-                .background(Color.white.opacity(0.82))
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .foregroundStyle(Color.rcmsTextPrimary)
-                .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
+            PhotosPicker(selection: photoPickerSelection, matching: .images) {
+                ChatComposerIconButton(systemName: "photo", isUploading: viewModel.isUploadingImage)
+            }
+            .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
+
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField(composerPlaceholder, text: $viewModel.inputText, axis: .vertical)
+                    .focused($isInputFocused)
+                    .lineLimit(1...5)
+                    .textInputAutocapitalization(.sentences)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 10)
+                    .foregroundStyle(Color.rcmsTextPrimary)
+                    .disabled(viewModel.connectionState != .connected || viewModel.isUploadingImage)
+            }
+            .background(Color.white.opacity(0.92))
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.black.opacity(0.06), lineWidth: 1)
+            )
 
             Button(action: viewModel.sendMessage) {
-                Image(systemName: "paperplane.fill")
-                    .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
-                    .background(Circle().fill(Color.rcmsAccent))
+                ZStack {
+                    Circle()
+                        .fill(Color.rcmsAccent)
+                        .frame(width: 44, height: 44)
+
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .offset(x: -1, y: 1)
+                }
             }
-            .disabled(
-                viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || viewModel.connectionState != .connected
-                    || viewModel.isUploadingImage
-            )
+            .disabled(isSendDisabled)
+            .opacity(isSendDisabled ? 0.45 : 1)
         }
         .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 10)
-        .background(Color.white.opacity(0.72))
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background(Color.white.opacity(0.78))
         .background(.ultraThinMaterial)
+    }
+
+    private var composerPlaceholder: String {
+        context.isGroup ? "Message group" : "Message \(context.title)"
+    }
+
+    private var isSendDisabled: Bool {
+        viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || viewModel.connectionState != .connected
+            || viewModel.isUploadingImage
+    }
+
+    private var effectiveCurrentUserID: String? {
+        currentUserIDOverride ?? authManager.currentUser?.id.uuidString
     }
 
     private var photoPickerSelection: Binding<PhotosPickerItem?> {
@@ -858,7 +946,7 @@ struct ChatRoomView: View {
     }
 
     private var latestMessageWasSentByCurrentUser: Bool {
-        normalizeIdentifier(viewModel.messages.last?.senderId) == normalizeIdentifier(authManager.currentUser?.id.uuidString)
+        normalizeIdentifier(viewModel.messages.last?.senderId) == normalizeIdentifier(effectiveCurrentUserID)
     }
 
     private func normalizeIdentifier(_ value: String?) -> String {
@@ -913,6 +1001,91 @@ struct ChatRoomView: View {
                 self.topVisibleMessageID = firstMessageID
             }
         }
+    }
+}
+
+private struct ChatChromeHeader<SettingsContent: View>: View {
+    let title: String
+    let showSettings: Bool
+    let onBack: () -> Void
+    @ViewBuilder let settingsContent: () -> SettingsContent
+
+    var body: some View {
+        ZStack {
+            HStack {
+                Button(action: onBack) {
+                    ChatHeaderIcon(systemName: "chevron.left", accessibilityLabel: "返回")
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                if showSettings {
+                    settingsContent()
+                } else {
+                    Color.clear
+                        .frame(width: 36, height: 36)
+                }
+            }
+
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.rcmsTextStrong)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .minimumScaleFactor(0.82)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 58)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.82))
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.black.opacity(0.06))
+                .frame(height: 1)
+        }
+    }
+}
+
+private struct ChatHeaderIcon: View {
+    let systemName: String
+    let accessibilityLabel: String
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 22, weight: .semibold))
+            .foregroundStyle(Color.rcmsAccent)
+            .frame(width: 36, height: 36)
+            .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+private struct ChatComposerIconButton: View {
+    let systemName: String
+    let isUploading: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.white.opacity(0.92))
+                .frame(width: 44, height: 44)
+                .overlay(Circle().stroke(Color.black.opacity(0.06), lineWidth: 1))
+
+            if isUploading {
+                ProgressView()
+                    .tint(Color.rcmsAccent)
+                    .frame(width: 44, height: 44)
+            } else {
+                Image(systemName: systemName)
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(Color.rcmsAccent)
+                    .frame(width: 44, height: 44)
+            }
+        }
+        .accessibilityLabel(isUploading ? "Image uploading" : "Choose image")
     }
 }
 
@@ -1160,16 +1333,38 @@ struct ChatBubbleRow: View {
     }
 
     private var senderAvatar: some View {
+        Group {
+            if let avatar = message.from.avatar?.trimmingCharacters(in: .whitespacesAndNewlines),
+               let url = URL(string: avatar),
+               !avatar.isEmpty {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    default:
+                        senderAvatarFallback
+                    }
+                }
+            } else {
+                senderAvatarFallback
+            }
+        }
+        .frame(width: 44, height: 44)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 3)
+    }
+
+    private var senderAvatarFallback: some View {
         Circle()
             .fill(avatarFill)
-            .frame(width: 30, height: 30)
             .overlay(
                 Image(systemName: senderIcon)
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(isBot ? .white : Color.rcmsTextSecondary)
             )
-            .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 1))
-            .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 3)
     }
 
     private func normalizeIdentifier(_ value: String?) -> String {
@@ -1707,5 +1902,169 @@ struct GroupMaintenanceSheet: View {
             .navigationTitle("群维护")
             .navigationBarTitleDisplayMode(.large)
         }
+    }
+}
+
+#Preview("Bot Single Chat") {
+    ChatRoomView(
+        previewContext: ChatContext(
+            id: "chat/dm/user/preview-user/bot/deploy-assistant",
+            title: "Deploy Assistant",
+            subtitle: "online",
+            isGroup: false,
+            bot: Bot(
+                id: UUID(),
+                ownerId: nil,
+                name: "Deploy Assistant",
+                description: "Release helper",
+                avatar: nil,
+                avatarUrl: nil,
+                botType: nil,
+                status: "online",
+                mqttTopic: nil,
+                createdAt: nil,
+                updatedAt: nil
+            )
+        ),
+        messages: ChatPreviewData.botMessages,
+        connectionState: .connected
+    )
+    .preferredColorScheme(.light)
+}
+
+#Preview("Group Chat") {
+    ChatRoomView(
+        previewContext: ChatContext(
+            id: "chat/group/openclaw-product",
+            title: "OpenClaw Product Group",
+            subtitle: "4 bots online",
+            isGroup: true,
+            groupId: "openclaw-product",
+            memberCount: 18
+        ),
+        messages: ChatPreviewData.groupMessages,
+        connectionState: .connected
+    )
+    .preferredColorScheme(.light)
+}
+
+private enum ChatPreviewData {
+    static let botMessages: [Message] = [
+        message(
+            id: "bot-1",
+            conversationID: "chat/dm/user/preview-user/bot/deploy-assistant",
+            senderType: "bot",
+            senderID: "deploy-assistant",
+            senderName: "Deploy Assistant",
+            body: "Build finished. Staging is healthy.",
+            seq: 1,
+            timestamp: 1_779_060_600
+        ),
+        message(
+            id: "user-1",
+            conversationID: "chat/dm/user/preview-user/bot/deploy-assistant",
+            senderType: "user",
+            senderID: "preview-user",
+            senderName: "You",
+            body: "Summarize the release risk.",
+            seq: 2,
+            timestamp: 1_779_060_660
+        ),
+        message(
+            id: "bot-2",
+            conversationID: "chat/dm/user/preview-user/bot/deploy-assistant",
+            senderType: "bot",
+            senderID: "deploy-assistant",
+            senderName: "Deploy Assistant",
+            body: "Here's the release risk summary:\n\n- Risk: low\n- Frontend: passed\n- Backend: passed",
+            seq: 3,
+            timestamp: 1_779_060_720
+        )
+    ]
+
+    static let groupMessages: [Message] = [
+        message(
+            id: "group-1",
+            conversationID: "chat/group/openclaw-product",
+            senderType: "user",
+            senderID: "mia",
+            senderName: "Mia",
+            body: "Image upload is ready for testing.",
+            seq: 1,
+            timestamp: 1_779_059_520
+        ),
+        message(
+            id: "group-2",
+            conversationID: "chat/group/openclaw-product",
+            senderType: "bot",
+            senderID: "ci-monitor",
+            senderName: "CI Monitor",
+            body: "Frontend build passed.\n\nBranch: feature/image-upload\nCommit: a1b2c3d\nDuration: 1m 24s\n\nAll checks passed",
+            seq: 2,
+            timestamp: 1_779_059_580
+        ),
+        message(
+            id: "group-3",
+            conversationID: "chat/group/openclaw-product",
+            senderType: "user",
+            senderID: "preview-user",
+            senderName: "You",
+            body: "Pin this summary for the team.",
+            seq: 3,
+            timestamp: 1_779_059_700
+        )
+    ]
+
+    private static func message(
+        id: String,
+        conversationID: String,
+        senderType: String,
+        senderID: String,
+        senderName: String,
+        body: String,
+        seq: Int,
+        timestamp: Int64
+    ) -> Message {
+        Message(
+            id: id,
+            conversationId: conversationID,
+            topic: conversationID,
+            senderId: senderID,
+            senderType: senderType,
+            from: ChatPeer(type: senderType, id: senderID, name: senderName, avatar: nil),
+            to: ChatPeer(type: "user", id: "preview-user", name: "You", avatar: nil),
+            content: MessageContent(type: "text", body: body, url: nil, name: nil, size: nil, meta: nil),
+            seq: seq,
+            timestamp: timestamp,
+            createdAt: Date(timeIntervalSince1970: TimeInterval(timestamp))
+        )
+    }
+}
+
+private extension Message {
+    init(
+        id: String,
+        conversationId: String,
+        topic: String,
+        senderId: String,
+        senderType: String,
+        from: ChatPeer,
+        to: ChatPeer,
+        content: MessageContent,
+        seq: Int?,
+        timestamp: Int64?,
+        createdAt: Date?
+    ) {
+        self.id = id
+        self.conversationId = conversationId
+        self.topic = topic
+        self.senderId = senderId
+        self.senderType = senderType
+        self.from = from
+        self.to = to
+        self.content = content
+        self.seq = seq
+        self.timestamp = timestamp
+        self.createdAt = createdAt
     }
 }

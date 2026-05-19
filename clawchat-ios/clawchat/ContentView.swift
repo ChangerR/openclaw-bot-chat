@@ -26,30 +26,48 @@ struct ContentView: View {
 }
 
 struct HomeView: View {
+    @State private var selectedTab: MainTab = .home
+
     var body: some View {
         ZStack {
             FrostedBackground()
 
-            TabView {
+            TabView(selection: $selectedTab) {
+                HomeDashboardView()
+                .tabItem {
+                    Label("Home", systemImage: "house.fill")
+                }
+                .tag(MainTab.home)
+
                 BotsView()
                     .tabItem {
-                        Label("单聊", systemImage: "message")
+                        Label("Bots", systemImage: "cpu.fill")
                     }
+                    .tag(MainTab.bots)
 
                 GroupsView()
                     .tabItem {
-                        Label("群组", systemImage: "person.3.fill")
+                        Label("Groups", systemImage: "person.3.fill")
                     }
+                    .tag(MainTab.groups)
 
                 SettingsView()
                     .tabItem {
-                        Label("设置", systemImage: "gearshape.fill")
+                        Label("Settings", systemImage: "gearshape.fill")
                     }
+                    .tag(MainTab.settings)
             }
             .tint(Color.rcmsAccent)
             .toolbarBackground(.visible, for: .tabBar)
             .toolbarBackground(Color.white.opacity(0.7), for: .tabBar)
         }
+    }
+
+    private enum MainTab: Hashable {
+        case home
+        case bots
+        case groups
+        case settings
     }
 }
 

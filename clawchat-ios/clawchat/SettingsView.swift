@@ -11,8 +11,8 @@ final class SettingsViewModel: ObservableObject {
     @Published var isChangingPassword = false
     @Published var loadErrorMessage: String?
 
-    init() {
-        self.currentUser = AuthManager.shared.currentUser
+    init(previewUser: User? = nil) {
+        self.currentUser = previewUser ?? AuthManager.shared.currentUser
     }
 
     func fetchProfile() async {
@@ -72,17 +72,17 @@ final class SettingsViewModel: ObservableObject {
         if let apiError = error as? APIClient.APIError {
             switch apiError {
             case .invalidURL:
-                return "请求地址无效"
+                return "Invalid server URL"
             case .noData:
-                return "服务器没有返回可用数据"
+                return "The server returned no usable data"
             case .decodingError:
-                return "数据解析失败"
+                return "Failed to parse server data"
             case .serverError(let message):
                 return message
             case .unauthorized:
-                return "登录已失效，请重新登录"
+                return "Your session expired. Please sign in again"
             case .networkError(let error):
-                return "网络连接失败：\(error.localizedDescription)"
+                return "Network connection failed: \(error.localizedDescription)"
             }
         }
 
@@ -91,10 +91,14 @@ final class SettingsViewModel: ObservableObject {
 }
 
 struct SettingsView: View {
-    @StateObject private var viewModel = SettingsViewModel()
+    @StateObject private var viewModel: SettingsViewModel
     @StateObject private var authManager = AuthManager.shared
+    @StateObject private var realtimeService = RealtimeService.shared
+    private let loadsProfileOnAppear: Bool
 
     @AppStorage("settings.botNotificationsEnabled") private var botNotificationsEnabled = false
+    @AppStorage("settings.compactMessageMode") private var compactMessageMode = false
+    @AppStorage("settings.imageUploadQuality") private var imageUploadQuality = "Compressed"
 
     @State private var didInitialLoad = false
     @State private var isEditingProfile = false
@@ -114,6 +118,11 @@ struct SettingsView: View {
 
     @FocusState private var focusNicknameField: Bool
 
+    init(previewUser: User? = nil) {
+        _viewModel = StateObject(wrappedValue: SettingsViewModel(previewUser: previewUser))
+        loadsProfileOnAppear = previewUser == nil
+    }
+
     private var resolvedUser: User? {
         viewModel.currentUser ?? authManager.currentUser
     }
@@ -130,17 +139,19 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         if let user = resolvedUser {
+                            settingsHeader
+
                             profileHeader(user: user)
-                            
-                            sectionHeader(title: "基本信息")
-                            basicInfoCard(user: user)
-                            
-                            sectionHeader(title: "账号安全")
-                            securityCard(user: user)
-                            
-                            sectionHeader(title: "系统偏好")
-                            preferencesCard
-                            
+
+                            sectionHeader(title: "Account")
+                            accountCard(user: user)
+
+                            sectionHeader(title: "Messaging")
+                            messagingCard
+
+                            sectionHeader(title: "System")
+                            systemCard
+
                             logoutButton
                         } else if viewModel.isLoading {
                             loadingIndicator
@@ -163,24 +174,26 @@ struct SettingsView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
-            .navigationTitle("设置")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(.light, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbar(.hidden, for: .navigationBar)
             .task {
-                await initialLoadIfNeeded()
+                if loadsProfileOnAppear {
+                    await initialLoadIfNeeded()
+                } else {
+                    syncProfileDraftsIfNeeded()
+                    await refreshNotificationAuthorization()
+                }
             }
             .onChange(of: resolvedUser?.id) { _, _ in
                 syncProfileDraftsIfNeeded()
             }
             .alert(
-                "资料加载失败",
+                "Profile failed to load",
                 isPresented: Binding(
                     get: { viewModel.loadErrorMessage != nil },
                     set: { _ in viewModel.loadErrorMessage = nil }
                 ),
                 actions: {
-                    Button("知道了", role: .cancel) {}
+                    Button("OK", role: .cancel) {}
                 },
                 message: {
                     Text(viewModel.loadErrorMessage ?? "")
@@ -193,7 +206,7 @@ struct SettingsView: View {
         VStack(spacing: 12) {
             ProgressView()
                 .tint(Color.rcmsAccent)
-            Text("正在加载个人资料")
+            Text("Loading your profile")
                 .font(.subheadline)
                 .foregroundStyle(Color.rcmsTextSecondary)
         }
@@ -209,26 +222,57 @@ struct SettingsView: View {
             .padding(.bottom, -8)
     }
 
+    private var settingsHeader: some View {
+        ZStack {
+            HStack {
+                Image("AppLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 36, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                Spacer()
+            }
+
+            Text("Settings")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.rcmsTextStrong)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+    }
+
     private func profileHeader(user: User) -> some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 18) {
             HStack(spacing: 16) {
                 ProfileAvatarView(
                     name: isEditingProfile ? effectiveDraftName(for: user) : displayName(for: user),
                     imageURL: isEditingProfile ? normalizedAvatarDraft : avatarURL(for: user),
-                    diameter: 80
+                    diameter: 76
                 )
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(displayName(for: user))
                         .font(.title2.bold())
                         .foregroundStyle(Color.rcmsTextPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .minimumScaleFactor(0.82)
                     
                     Text("@\(user.username)")
                         .font(.subheadline)
                         .foregroundStyle(Color.rcmsTextSecondary)
-                }
+                        .lineLimit(1)
+                        .truncationMode(.middle)
 
-                Spacer()
+                    Text(user.email)
+                        .font(.subheadline)
+                        .foregroundStyle(Color.rcmsTextSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
 
                 Button {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
@@ -239,22 +283,27 @@ struct SettingsView: View {
                         }
                     }
                 } label: {
-                    Text(isEditingProfile ? "取消" : "编辑")
+                    Text(isEditingProfile ? "Cancel" : "Edit")
                         .font(.subheadline.bold())
-                        .foregroundStyle(isEditingProfile ? Color.rcmsTextSecondary : Color.rcmsAccent)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Color.white.opacity(0.8))
-                        .clipShape(Capsule())
+                        .foregroundStyle(Color.rcmsAccent)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(Color.white.opacity(0.7))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.rcmsAccent.opacity(0.55), lineWidth: 1)
+                        )
                 }
+                .fixedSize()
             }
 
             if isEditingProfile {
                 VStack(spacing: 16) {
-                    editField(title: "昵称", placeholder: "输入昵称", text: $nicknameDraft)
+                    editField(title: "Display name", placeholder: "Add a display name", text: $nicknameDraft)
                         .focused($focusNicknameField)
                     
-                    editField(title: "头像地址", placeholder: "HTTPS 链接", text: $avatarURLDraft)
+                    editField(title: "Avatar URL", placeholder: "HTTPS image link", text: $avatarURLDraft)
 
                     if let profileErrorMessage {
                         Text(profileErrorMessage)
@@ -269,7 +318,7 @@ struct SettingsView: View {
                         if viewModel.isSavingProfile {
                             ProgressView().tint(.white)
                         } else {
-                            Text("保存修改")
+                            Text("Save profile")
                                 .font(.headline)
                         }
                     }
@@ -305,22 +354,15 @@ struct SettingsView: View {
         }
     }
 
-    private func basicInfoCard(user: User) -> some View {
+    private func accountCard(user: User) -> some View {
         VStack(spacing: 0) {
-            infoRow(title: "邮箱", value: user.email)
+            actionRow(title: "Profile", subtitle: "", value: "", icon: "person") {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    startProfileEditing(using: user)
+                }
+            }
             divider
-            let uidString = user.id.uuidString.lowercased()
-            let shortUID = String(uidString.prefix(8)) + "..."
-            infoRow(title: "UID", value: shortUID, isMonospaced: true, copyString: uidString)
-            divider
-            infoRow(title: "注册时间", value: dateText(user.createdAt) ?? "未知")
-        }
-        .glassCardStyle()
-    }
-
-    private func securityCard(user: User) -> some View {
-        VStack(spacing: 0) {
-            actionRow(title: "修改密码", subtitle: "定期更换密码以保护账号", value: showPasswordEditor ? "收起" : "前往") {
+            actionRow(title: "Password", subtitle: "", value: "", icon: "lock") {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                     showPasswordEditor.toggle()
                 }
@@ -334,7 +376,7 @@ struct SettingsView: View {
 
             divider
 
-            actionRow(title: "登录设备", subtitle: "查看当前在线的 iPhone/iPad", value: showDeviceDetails ? "收起" : "查看") {
+            actionRow(title: "Devices", subtitle: "", value: "", icon: "iphone") {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                     showDeviceDetails.toggle()
                 }
@@ -351,17 +393,17 @@ struct SettingsView: View {
 
     private var passwordEditor: some View {
         VStack(spacing: 12) {
-            SecureField("当前密码", text: $currentPassword)
+            SecureField("Current password", text: $currentPassword)
                 .padding(12)
                 .background(Color.white.opacity(0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             
-            SecureField("新密码 (至少8位)", text: $newPassword)
+            SecureField("New password (at least 8 characters)", text: $newPassword)
                 .padding(12)
                 .background(Color.white.opacity(0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             
-            SecureField("确认新密码", text: $confirmPassword)
+            SecureField("Confirm new password", text: $confirmPassword)
                 .padding(12)
                 .background(Color.white.opacity(0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -379,7 +421,7 @@ struct SettingsView: View {
                 if viewModel.isChangingPassword {
                     ProgressView().tint(.white)
                 } else {
-                    Text("更新密码").bold()
+                    Text("Update password").bold()
                 }
             }
             .frame(maxWidth: .infinity)
@@ -404,12 +446,12 @@ struct SettingsView: View {
                 VStack(alignment: .leading) {
                     Text(UIDevice.current.name)
                         .font(.subheadline.bold())
-                    Text("iOS \(UIDevice.current.systemVersion) · 当前设备")
+                    Text("iOS \(UIDevice.current.systemVersion) · Current device")
                         .font(.caption)
                         .foregroundStyle(Color.rcmsTextSecondary)
                 }
                 Spacer()
-                Text("在线").font(.caption.bold()).foregroundStyle(Color.rcmsOnline)
+                Text("Online").font(.caption.bold()).foregroundStyle(Color.rcmsOnline)
             }
         }
         .padding(12)
@@ -417,9 +459,9 @@ struct SettingsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private var preferencesCard: some View {
+    private var messagingCard: some View {
         VStack(spacing: 0) {
-            preferenceRow(title: "机器人消息推送", subtitle: notificationSubtitle) {
+            preferenceRow(title: "Bot notifications", subtitle: notificationSubtitle, icon: "bell.badge") {
                 Toggle("", isOn: Binding(
                     get: { botNotificationsEnabled },
                     set: { newValue in
@@ -429,6 +471,31 @@ struct SettingsView: View {
                 .labelsHidden()
                 .tint(Color.rcmsAccent)
             }
+            divider
+            preferenceRow(title: "Compact message mode", subtitle: compactMessageMode ? "Dense bubbles and tighter spacing" : "Comfortable message spacing", icon: "text.alignleft") {
+                Toggle("", isOn: $compactMessageMode)
+                    .labelsHidden()
+                    .tint(Color.rcmsAccent)
+            }
+            divider
+            preferenceRow(title: "Image upload quality", subtitle: imageUploadQualitySubtitle, icon: "photo.on.rectangle") {
+                Picker("Image upload quality", selection: $imageUploadQuality) {
+                    ForEach(Self.imageUploadQualityOptions, id: \.self) { quality in
+                        Text(quality).tag(quality)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(Color.rcmsAccent)
+            }
+        }
+        .glassCardStyle()
+    }
+
+    private var systemCard: some View {
+        VStack(spacing: 0) {
+            infoRow(title: "Realtime connection", value: realtimeConnectionText, icon: realtimeConnectionIcon)
+            divider
+            infoRow(title: "API endpoint", value: APIClient.shared.baseURL.absoluteString, icon: "network", isMonospaced: true, copyString: APIClient.shared.baseURL.absoluteString)
         }
         .glassCardStyle()
     }
@@ -438,24 +505,30 @@ struct SettingsView: View {
             authManager.logout()
         } label: {
             HStack {
-                Text("退出登录")
+                Text("Log out")
                     .font(.headline)
-                    .foregroundStyle(Color.rcmsDanger)
+                    .foregroundStyle(Self.coralDanger)
                 Spacer()
                 Image(systemName: "arrow.right.square")
-                    .foregroundStyle(Color.rcmsDanger)
+                    .foregroundStyle(Self.coralDanger)
             }
             .padding(18)
-            .glassCardStyle()
+            .background(Self.coralDanger.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Self.coralDanger.opacity(0.22), lineWidth: 1)
+            )
         }
         .padding(.top, 12)
     }
 
-    private func infoRow(title: String, value: String, isMonospaced: Bool = false, copyString: String? = nil) -> some View {
+    private func infoRow(title: String, value: String, icon: String, isMonospaced: Bool = false, copyString: String? = nil) -> some View {
         HStack {
+            rowIcon(icon)
             Text(title)
-                .font(.subheadline)
-                .foregroundStyle(Color.rcmsTextSecondary)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.rcmsTextPrimary)
             Spacer()
             HStack(spacing: 6) {
                 Text(value)
@@ -467,7 +540,7 @@ struct SettingsView: View {
                 if let copyString {
                     Button {
                         UIPasteboard.general.string = copyString
-                        presentToast("已复制到剪贴板")
+                        presentToast("Copied to clipboard")
                     } label: {
                         Image(systemName: "doc.on.doc")
                             .font(.caption)
@@ -479,23 +552,28 @@ struct SettingsView: View {
         .padding(16)
     }
 
-    private func actionRow(title: String, subtitle: String, value: String, action: @escaping () -> Void) -> some View {
+    private func actionRow(title: String, subtitle: String, value: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack {
+                rowIcon(icon)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.subheadline.bold())
+                        .font(.body.weight(.medium))
                         .foregroundStyle(Color.rcmsTextPrimary)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(Color.rcmsTextSecondary)
+                    if !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(Color.rcmsTextSecondary)
+                    }
                 }
                 Spacer()
-                Text(value)
-                    .font(.caption.bold())
-                    .foregroundStyle(Color.rcmsAccent)
+                if !value.isEmpty {
+                    Text(value)
+                        .font(.caption.bold())
+                        .foregroundStyle(Color.rcmsAccent)
+                }
                 Image(systemName: "chevron.right")
-                    .font(.caption)
+                    .font(.body.weight(.medium))
                     .foregroundStyle(Color.rcmsTextSecondary.opacity(0.5))
             }
             .padding(16)
@@ -503,11 +581,12 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    private func preferenceRow<Content: View>(title: String, subtitle: String, @ViewBuilder content: () -> Content) -> some View {
+    private func preferenceRow<Content: View>(title: String, subtitle: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
         HStack {
+            rowIcon(icon)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.subheadline.bold())
+                    .font(.body.weight(.medium))
                     .foregroundStyle(Color.rcmsTextPrimary)
                 Text(subtitle)
                     .font(.caption)
@@ -517,6 +596,13 @@ struct SettingsView: View {
             content()
         }
         .padding(16)
+    }
+
+    private func rowIcon(_ icon: String) -> some View {
+        Image(systemName: icon)
+            .font(.system(size: 22, weight: .medium))
+            .foregroundStyle(Color.rcmsTextPrimary.opacity(0.78))
+            .frame(width: 30, height: 30)
     }
 
     private var divider: some View {
@@ -578,13 +664,13 @@ struct SettingsView: View {
         let trimmedNickname = nicknameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAvatarURL = avatarURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedNickname.isEmpty {
-            profileErrorMessage = "昵称不能为空"
+            profileErrorMessage = "Display name cannot be empty"
             return
         }
         do {
             _ = try await viewModel.updateProfile(nickname: trimmedNickname, avatarURL: trimmedAvatarURL)
             withAnimation { isEditingProfile = false }
-            presentToast("个人资料已更新")
+            presentToast("Profile updated")
         } catch {
             profileErrorMessage = SettingsViewModel.message(from: error)
         }
@@ -593,18 +679,18 @@ struct SettingsView: View {
     private func submitPasswordChange() async {
         passwordErrorMessage = nil
         if newPassword.count < 8 {
-            passwordErrorMessage = "新密码至少需要 8 个字符"
+            passwordErrorMessage = "New password must be at least 8 characters"
             return
         }
         if newPassword != confirmPassword {
-            passwordErrorMessage = "两次输入的新密码不一致"
+            passwordErrorMessage = "New passwords do not match"
             return
         }
         do {
             try await viewModel.changePassword(currentPassword: currentPassword, newPassword: newPassword)
             resetPasswordForm()
             withAnimation { showPasswordEditor = false }
-            presentToast("密码已更新")
+            presentToast("Password updated")
         } catch {
             passwordErrorMessage = SettingsViewModel.message(from: error)
         }
@@ -626,22 +712,22 @@ struct SettingsView: View {
     private func updateNotifications(enabled: Bool) async {
         if !enabled {
             botNotificationsEnabled = false
-            presentToast("已关闭消息提醒")
+            presentToast("Notifications turned off")
             return
         }
         if hasNotificationPermission {
             botNotificationsEnabled = true
-            presentToast("已开启消息提醒")
+            presentToast("Notifications turned on")
             return
         }
         let granted = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
         await refreshNotificationAuthorization()
         if granted == true {
             botNotificationsEnabled = true
-            presentToast("已开启消息提醒")
+            presentToast("Notifications turned on")
         } else {
             botNotificationsEnabled = false
-            presentToast("未获得通知权限", isError: true)
+            presentToast("Notification permission was not granted", isError: true)
         }
     }
 
@@ -686,16 +772,56 @@ struct SettingsView: View {
 
     private var notificationSubtitle: String {
         switch notificationAuthorizationStatus {
-        case .authorized, .provisional: return botNotificationsEnabled ? "推送已开启" : "已授权"
-        case .denied: return "系统权限已关闭"
-        default: return "未设置"
+        case .authorized, .provisional: return botNotificationsEnabled ? "Enabled" : "Permission granted"
+        case .denied: return "Disabled in system settings"
+        default: return "Not configured"
         }
     }
 
+    private var imageUploadQualitySubtitle: String {
+        switch imageUploadQuality {
+        case "Original":
+            return "Prefer original files when possible"
+        case "Compressed":
+            return "Smaller uploads for slower networks"
+        default:
+            return "Balanced size and clarity"
+        }
+    }
+
+    private var realtimeConnectionText: String {
+        switch realtimeService.connectionState {
+        case .idle:
+            return "Idle"
+        case .connecting:
+            return "Connecting"
+        case .connected:
+            return "Connected"
+        case .disconnected:
+            return "Disconnected"
+        }
+    }
+
+    private var realtimeConnectionIcon: String {
+        switch realtimeService.connectionState {
+        case .connected:
+            return "bolt.horizontal.circle.fill"
+        case .connecting:
+            return "arrow.triangle.2.circlepath"
+        case .disconnected:
+            return "wifi.slash"
+        case .idle:
+            return "power"
+        }
+    }
+
+    private static let imageUploadQualityOptions = ["Compressed", "Balanced", "Original"]
+    private static let coralDanger = Color(red: 248 / 255, green: 113 / 255, blue: 113 / 255)
+
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "yyyy.MM.dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM d, yyyy"
         return f
     }()
 }
@@ -768,4 +894,18 @@ private struct SettingsToastPayload: Identifiable, Equatable {
     let id = UUID()
     let message: String
     let isError: Bool
+}
+
+#Preview("Settings") {
+    SettingsView(previewUser: User(
+        id: UUID(),
+        username: "alex",
+        email: "alex@openclaw.dev-lcoalsdfsdfsd",
+        nickname: "Alex Chen -msdfsdfsdf",
+        avatar: nil,
+        avatarUrl: nil,
+        createdAt: Date(timeIntervalSince1970: 1_764_028_800),
+        updatedAt: nil
+    ))
+    .preferredColorScheme(.light)
 }

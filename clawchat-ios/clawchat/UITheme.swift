@@ -1,6 +1,13 @@
 import SwiftUI
 
 extension Color {
+    static let rcmsSurface = Color.white.opacity(0.78)
+    static let rcmsSurfaceSolid = Color.white
+    static let rcmsSurfaceMuted = Color(red: 241/255, green: 245/255, blue: 249/255)
+    static let rcmsAccentSoft = Color(red: 224/255, green: 242/255, blue: 254/255)
+    static let rcmsAccentSofter = Color(red: 186/255, green: 230/255, blue: 253/255)
+    static let rcmsWarning = Color(red: 245/255, green: 158/255, blue: 11/255)
+
     static let rcmsAccent = Color(red: 14/255, green: 165/255, blue: 233/255)
     static let rcmsOnline = Color(red: 16/255, green: 185/255, blue: 129/255)
     static let rcmsOffline = Color(red: 148/255, green: 163/255, blue: 184/255)
@@ -13,10 +20,44 @@ extension Color {
     static let rcmsDivider = Color.black.opacity(0.05)
 }
 
+enum UITheme {
+    enum Radius {
+        static let small: CGFloat = 8
+        static let medium: CGFloat = 12
+        static let large: CGFloat = 16
+        static let pill: CGFloat = 999
+    }
+
+    enum Spacing {
+        static let tight: CGFloat = 6
+        static let small: CGFloat = 10
+        static let medium: CGFloat = 16
+        static let large: CGFloat = 20
+    }
+
+    enum Shadow {
+        static let cardColor = Color.black.opacity(0.08)
+        static let cardRadius: CGFloat = 16
+        static let cardYOffset: CGFloat = 8
+        static let accentColor = Color.rcmsAccent.opacity(0.3)
+    }
+
+    static let cardStroke = Color.white.opacity(0.9)
+    static let subtleStroke = Color.black.opacity(0.05)
+
+    static var avatarGradient: LinearGradient {
+        LinearGradient(
+            colors: [Color.rcmsAccentSoft, Color.rcmsAccentSofter],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+}
+
 struct FrostedBackground: View {
     var body: some View {
         LinearGradient(
-            colors: [Color.rcmsBackground, Color(red: 241/255, green: 245/255, blue: 249/255)],
+            colors: [Color.rcmsBackground, Color.rcmsSurfaceMuted],
             startPoint: .top,
             endPoint: .bottom
         )
@@ -27,14 +68,14 @@ struct FrostedBackground: View {
 struct GlassCard: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .background(Color.white.opacity(0.72))
+            .background(Color.rcmsSurface)
             .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: UITheme.Radius.large, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.white.opacity(0.9), lineWidth: 1)
+                RoundedRectangle(cornerRadius: UITheme.Radius.large, style: .continuous)
+                    .stroke(UITheme.cardStroke, lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: 8)
+            .shadow(color: UITheme.Shadow.cardColor, radius: UITheme.Shadow.cardRadius, x: 0, y: UITheme.Shadow.cardYOffset)
     }
 }
 

@@ -95,7 +95,15 @@ struct BotsView: View {
                         ForEach(filteredBots) { bot in
                             if let topic = conversationTopic(for: bot) {
                                 NavigationLink {
-                                    ChatRoomView(context: .init(id: topic, title: bot.name, subtitle: bot.status == "online" ? "在线" : "离线", isGroup: false, groupId: nil, bot: bot))
+                                    ChatRoomView(context: .init(
+                                        id: topic,
+                                        title: bot.name,
+                                        subtitle: bot.status == "online" ? "online" : "offline",
+                                        isGroup: false,
+                                        groupId: nil,
+                                        bot: bot,
+                                        avatarURLString: bot.avatarUrl ?? bot.avatar
+                                    ))
                                 } label: {
                                     BotRowCard(bot: bot)
                                 }

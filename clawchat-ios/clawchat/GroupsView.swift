@@ -88,7 +88,15 @@ struct GroupsView: View {
 
                         ForEach(filteredGroups) { group in
                             NavigationLink {
-                                ChatRoomView(context: .init(id: conversationTopic(for: group), title: group.name, subtitle: (group.isActive == true) ? "在线" : "离线", isGroup: true, groupId: group.id.uuidString.lowercased()))
+                                ChatRoomView(context: .init(
+                                    id: conversationTopic(for: group),
+                                    title: group.name,
+                                    subtitle: (group.isActive == true) ? "bots online" : "bots offline",
+                                    isGroup: true,
+                                    groupId: group.id.uuidString.lowercased(),
+                                    memberCount: group.memberCount,
+                                    avatarURLString: group.avatarUrl ?? group.avatar
+                                ))
                             } label: {
                                 GroupRowCard(group: group)
                             }

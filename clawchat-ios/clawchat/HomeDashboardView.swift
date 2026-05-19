@@ -1,0 +1,348 @@
+import SwiftUI
+import Combine
+
+struct HomeDashboardMetrics: Equatable {
+    let totalBots: Int
+    let onlineBots: Int
+    let totalGroups: Int
+    let activeGroups: Int
+    let totalConversations: Int
+    let unreadMessages: Int
+
+    init(bots: [Bot], groups: [ChatGroup], conversations: [Conversation]) {
+        totalBots = bots.count
+        onlineBots = bots.filter { $0.status == "online" }.count
+        totalGroups = groups.count
+        activeGroups = groups.filter { $0.isActive == true }.count
+        totalConversations = conversations.count
+        unreadMessages = conversations.reduce(0) { total, conversation in
+            total + max(conversation.unreadCount ?? 0, 0)
+        }
+    }
+}
+
+final class HomeDashboardViewModel: ObservableObject {
+    @Published private(set) var bots: [Bot] = []
+    @Published private(set) var groups: [ChatGroup] = []
+    @Published private(set) var conversations: [Conversation] = []
+    @Published private(set) var isLoading = false
+    @Published var errorMessage: String?
+
+    private var cancellables = Set<AnyCancellable>()
+
+    var metrics: HomeDashboardMetrics {
+        HomeDashboardMetrics(bots: bots, groups: groups, conversations: conversations)
+    }
+
+    var recentConversations: [Conversation] {
+        conversations.sorted { lhs, rhs in
+            let leftTimestamp = lhs.lastMessage?.timestamp ?? Int64.min
+            let rightTimestamp = rhs.lastMessage?.timestamp ?? Int64.min
+            if leftTimestamp != rightTimestamp {
+                return leftTimestamp > rightTimestamp
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    func refresh() {
+        errorMessage = nil
+        isLoading = true
+
+        let botsRequest: AnyPublisher<[Bot], Error> = APIClient.shared.request("/api/v1/bots")
+        let groupsRequest: AnyPublisher<[ChatGroup], Error> = APIClient.shared.request("/api/v1/groups")
+        let conversationsRequest: AnyPublisher<[Conversation], Error> = APIClient.shared.request("/api/v1/conversations")
+
+        Publishers.Zip3(botsRequest, groupsRequest, conversationsRequest)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] completion in
+                self?.isLoading = false
+                if case .failure(let error) = completion {
+                    self?.errorMessage = error.localizedDescription
+                }
+            } receiveValue: { [weak self] bots, groups, conversations in
+                LocalMessageStore.shared.upsert(conversations: conversations)
+                self?.bots = bots
+                self?.groups = groups
+                self?.conversations = conversations
+            }
+            .store(in: &cancellables)
+    }
+}
+
+struct HomeDashboardView: View {
+    @StateObject private var viewModel = HomeDashboardViewModel()
+    @ObservedObject private var authManager = AuthManager.shared
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FrostedBackground()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 22) {
+                        header
+
+                        messagesSection
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 22)
+                    .padding(.bottom, 28)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .toolbar(.hidden, for: .navigationBar)
+            .onAppear {
+                viewModel.refresh()
+            }
+            .refreshable {
+                viewModel.refresh()
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Messages")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.rcmsTextStrong)
+
+                Text("Welcome back")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.rcmsTextSecondary)
+            }
+
+            Spacer()
+
+            AvatarBadge(
+                name: authManager.currentUser?.nickname ?? authManager.currentUser?.username ?? "User",
+                imageURL: authManager.currentUser?.avatarUrl ?? authManager.currentUser?.avatar,
+                diameter: 50,
+                statusColor: nil
+            )
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var messagesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Chats")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(Color.rcmsTextStrong)
+
+                Spacer()
+
+                if viewModel.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            if let errorMessage = viewModel.errorMessage {
+                HomeEmptyState(
+                    systemImage: "exclamationmark.triangle.fill",
+                    title: "Dashboard unavailable",
+                    message: errorMessage
+                )
+            } else if viewModel.recentConversations.isEmpty {
+                HomeEmptyState(
+                    systemImage: "bubble.left.and.bubble.right",
+                    title: "No conversations yet",
+                    message: "Start a chat from Bots or Groups."
+                )
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(viewModel.recentConversations) { conversation in
+                        NavigationLink {
+                            ChatRoomView(context: chatContext(for: conversation))
+                        } label: {
+                            DashboardConversationRow(
+                                title: conversation.name,
+                                subtitle: conversation.lastMessage?.content ?? "No messages yet",
+                                timestamp: timestamp(for: conversation),
+                                unreadCount: conversation.unreadCount,
+                                avatarURL: conversation.avatar,
+                                systemImage: conversation.type == "group" ? "person.3.fill" : "bubble.left.fill"
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        if conversation.id != viewModel.recentConversations.last?.id {
+                            Divider()
+                                .padding(.leading, 72)
+                        }
+                    }
+                }
+                .glassCardStyle()
+            }
+        }
+    }
+
+    private func chatContext(for conversation: Conversation) -> ChatContext {
+        switch conversation.type.lowercased() {
+        case "group":
+            if let group = matchingGroup(for: conversation) {
+                return ChatContext(
+                    id: conversationTopic(for: group),
+                    title: group.name,
+                    subtitle: (group.isActive == true) ? "bots online" : "bots offline",
+                    isGroup: true,
+                    groupId: group.id.uuidString.lowercased(),
+                    memberCount: group.memberCount,
+                    avatarURLString: group.avatarUrl ?? group.avatar
+                )
+            }
+
+            let groupId = conversationTargetID(for: conversation)
+            return ChatContext(
+                id: conversation.id,
+                title: conversation.name,
+                subtitle: "group chat",
+                isGroup: true,
+                groupId: groupId,
+                avatarURLString: conversation.avatar
+            )
+
+        default:
+            if let bot = matchingBot(for: conversation) {
+                return ChatContext(
+                    id: conversationTopic(for: bot) ?? conversation.id,
+                    title: bot.name,
+                    subtitle: bot.status == "online" ? "online" : "offline",
+                    isGroup: false,
+                    groupId: nil,
+                    bot: bot,
+                    avatarURLString: bot.avatarUrl ?? bot.avatar
+                )
+            }
+
+            return ChatContext(
+                id: conversation.id,
+                title: conversation.name,
+                subtitle: conversation.type.lowercased() == "bot" ? "bot chat" : "chat",
+                isGroup: false,
+                groupId: nil,
+                avatarURLString: conversation.avatar
+            )
+        }
+    }
+
+    private func matchingGroup(for conversation: Conversation) -> ChatGroup? {
+        let targetID = conversationTargetID(for: conversation)
+        return viewModel.groups.first { group in
+            let groupID = group.id.uuidString.lowercased()
+            return targetID == groupID
+                || conversation.id == conversationTopic(for: group)
+        }
+    }
+
+    private func matchingBot(for conversation: Conversation) -> Bot? {
+        let targetID = conversationTargetID(for: conversation)
+        return viewModel.bots.first { bot in
+            let botID = bot.id.uuidString.lowercased()
+            return targetID == botID
+                || conversation.id == conversationTopic(for: bot)
+        }
+    }
+
+    private func conversationTargetID(for conversation: Conversation) -> String? {
+        if let targetId = conversation.targetId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !targetId.isEmpty {
+            return targetId
+        }
+
+        let parts = conversation.id.split(separator: "/").map(String.init)
+        if parts.count >= 3, parts[0] == "chat", parts[1] == "group" {
+            return parts[2].lowercased()
+        }
+        if let botIndex = parts.firstIndex(of: "bot"), botIndex + 1 < parts.count {
+            return parts[botIndex + 1].lowercased()
+        }
+        return nil
+    }
+
+    private func conversationTopic(for group: ChatGroup) -> String {
+        if let mqttTopic = group.mqttTopic, !mqttTopic.isEmpty {
+            return mqttTopic
+        }
+        return "chat/group/\(group.id.uuidString.lowercased())"
+    }
+
+    private func conversationTopic(for bot: Bot) -> String? {
+        if let mqttTopic = bot.mqttTopic, !mqttTopic.isEmpty {
+            return mqttTopic
+        }
+        guard let userID = authManager.currentUser?.id.uuidString.lowercased() else {
+            return nil
+        }
+        return "chat/dm/user/\(userID)/bot/\(bot.id.uuidString.lowercased())"
+    }
+
+    private func timestamp(for conversation: Conversation) -> String? {
+        guard let date = conversation.lastMessage?.displayDate else {
+            return nil
+        }
+
+        if Calendar.current.isDateInToday(date) {
+            return Self.timeFormatter.string(from: date)
+        }
+
+        if Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year) {
+            return Self.dayFormatter.string(from: date)
+        }
+
+        return Self.yearFormatter.string(from: date)
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateFormat = "M/d"
+        return formatter
+    }()
+
+    private static let yearFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy/M/d"
+        return formatter
+    }()
+}
+
+private struct HomeEmptyState: View {
+    let systemImage: String
+    let title: String
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.title2)
+                .foregroundStyle(Color.rcmsTextSecondary)
+
+            Text(title)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(Color.rcmsTextStrong)
+
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(Color.rcmsTextSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(22)
+        .glassCardStyle()
+    }
+}
+
+#Preview {
+    HomeDashboardView()
+}
