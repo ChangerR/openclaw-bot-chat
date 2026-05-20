@@ -37,23 +37,58 @@ struct ChatHighlightedCodeView: View {
 
     @MainActor
     private func renderHighlightedText() async {
+        if let cached = Self.cachedHighlight(for: renderKey) {
+            highlightedText = cached
+            return
+        }
+
         do {
             let colors = HighlightColors.custom(css: isMe ? Self.sentCodeCSS : Self.receivedCodeCSS)
+            let renderedText: AttributedString
 
             if let normalizedLanguage {
-                highlightedText = try await highlighter.attributedText(
+                renderedText = try await highlighter.attributedText(
                     code,
                     language: normalizedLanguage,
                     colors: colors
                 )
             } else {
-                highlightedText = try await highlighter.attributedText(
+                renderedText = try await highlighter.attributedText(
                     code,
                     colors: colors
                 )
             }
+
+            highlightedText = renderedText
+            Self.cacheHighlight(renderedText, for: renderKey)
         } catch {
             highlightedText = nil
+        }
+    }
+
+    @MainActor
+    private static var highlightCache: [String: AttributedString] = [:]
+
+    @MainActor
+    private static var highlightCacheOrder: [String] = []
+
+    private static let highlightCacheLimit = 80
+
+    @MainActor
+    private static func cachedHighlight(for key: String) -> AttributedString? {
+        highlightCache[key]
+    }
+
+    @MainActor
+    private static func cacheHighlight(_ value: AttributedString, for key: String) {
+        if highlightCache[key] == nil {
+            highlightCacheOrder.append(key)
+        }
+        highlightCache[key] = value
+
+        while highlightCacheOrder.count > highlightCacheLimit {
+            let oldestKey = highlightCacheOrder.removeFirst()
+            highlightCache[oldestKey] = nil
         }
     }
 

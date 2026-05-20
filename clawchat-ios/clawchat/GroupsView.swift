@@ -6,10 +6,26 @@ class GroupsViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
 
+    private let refreshInterval: TimeInterval = 45
     private var cancellables = Set<AnyCancellable>()
+    private var hasLoaded = false
+    private var lastRefreshAt: Date?
 
-    func fetchGroups() {
+    func refreshIfNeeded(force: Bool = false) {
+        if isLoading {
+            return
+        }
+
+        if !force, hasLoaded, let lastRefreshAt, Date().timeIntervalSince(lastRefreshAt) < refreshInterval {
+            return
+        }
+
+        fetchGroups()
+    }
+
+    private func fetchGroups() {
         isLoading = true
+        errorMessage = nil
         APIClient.shared.request("/api/v1/groups")
             .receive(on: DispatchQueue.main)
             .sink { completion in
@@ -19,6 +35,8 @@ class GroupsViewModel: ObservableObject {
                 }
             } receiveValue: { (groups: [ChatGroup]) in
                 self.groups = groups
+                self.hasLoaded = true
+                self.lastRefreshAt = Date()
             }
             .store(in: &cancellables)
     }
@@ -38,7 +56,7 @@ class GroupsViewModel: ObservableObject {
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (_: ChatGroup) in
-                self.fetchGroups()
+                self.refreshIfNeeded(force: true)
                 onDone()
             }
             .store(in: &cancellables)
@@ -81,7 +99,7 @@ struct GroupsView: View {
                             .padding(.top, 8)
                             .padding(.bottom, 10)
 
-                        if viewModel.isLoading {
+                        if viewModel.isLoading && viewModel.groups.isEmpty {
                             ProgressView()
                                 .padding(.top, 32)
                         }
@@ -121,8 +139,8 @@ struct GroupsView: View {
                         .foregroundStyle(Color.rcmsAccent)
                 }
             }
-            .onAppear { viewModel.fetchGroups() }
-            .refreshable { viewModel.fetchGroups() }
+            .onAppear { viewModel.refreshIfNeeded() }
+            .refreshable { viewModel.refreshIfNeeded(force: true) }
             .sheet(isPresented: $showingCreate) {
                 createGroupSheet
             }

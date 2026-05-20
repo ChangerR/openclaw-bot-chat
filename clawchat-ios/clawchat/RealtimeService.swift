@@ -23,6 +23,9 @@ class RealtimeService: NSObject, ObservableObject {
     private var subscribedTopics = Set<String>()
     private var retryWorkItem: DispatchWorkItem?
     private let retryDelay: TimeInterval = 3
+#if DEBUG
+    private static let isHighFrequencyLoggingEnabled = false
+#endif
 
     var historyMaxCatchupBatch: Int {
         bootstrap?.history.maxCatchupBatch ?? 200
@@ -90,13 +93,15 @@ class RealtimeService: NSObject, ObservableObject {
 
         let wasRequested = requestedTopics.contains(normalizedTopic)
         requestedTopics.insert(normalizedTopic)
+        let alreadySubscribed = subscribedTopics.contains(normalizedTopic)
 
         guard connectionState == .connected,
               let mqttClient,
-              !subscribedTopics.contains(normalizedTopic)
+              !alreadySubscribed
         else {
             log(
-                "subscribe deferred topic=\(normalizedTopic) was_requested=\(wasRequested) state=\(connectionState) has_client=\(mqttClient != nil) already_subscribed=\(subscribedTopics.contains(normalizedTopic))"
+                "subscribe deferred topic=\(normalizedTopic) was_requested=\(wasRequested) state=\(connectionState) has_client=\(mqttClient != nil) already_subscribed=\(alreadySubscribed)",
+                highFrequency: alreadySubscribed
             )
             return
         }
@@ -253,7 +258,8 @@ class RealtimeService: NSObject, ObservableObject {
             return false
         }
         log(
-            "publish topic=\(topic) conversation_id=\(conversationId) message_id=\(payload.id) to=\(target.type)/\(target.id) bytes=\(jsonData.count) subscribed=\(subscribedTopics.contains(topic))"
+            "publish topic=\(topic) conversation_id=\(conversationId) message_id=\(payload.id) to=\(target.type)/\(target.id) bytes=\(jsonData.count) subscribed=\(subscribedTopics.contains(topic))",
+            highFrequency: true
         )
         mqttClient.publish(topic, withString: String(decoding: jsonData, as: UTF8.self), qos: .qos1)
         return true
@@ -261,7 +267,8 @@ class RealtimeService: NSObject, ObservableObject {
 
     private func handleRealtimePayload(_ payload: RealtimeMessagePayload) {
         log(
-            "message decoded id=\(payload.id) topic=\(payload.topic) conversation_id=\(payload.conversationId) from=\(payload.from.type)/\(payload.from.id) to=\(payload.to.type)/\(payload.to.id) seq=\(payload.seq.map(String.init) ?? "<nil>")"
+            "message decoded id=\(payload.id) topic=\(payload.topic) conversation_id=\(payload.conversationId) from=\(payload.from.type)/\(payload.from.id) to=\(payload.to.type)/\(payload.to.id) seq=\(payload.seq.map(String.init) ?? "<nil>")",
+            highFrequency: true
         )
         let message = Message(from: payload)
         LocalMessageStore.shared.upsert(messages: [message])
@@ -276,7 +283,12 @@ class RealtimeService: NSObject, ObservableObject {
         }
     }
 
-    private func log(_ message: String) {
+    private func log(_ message: String, highFrequency: Bool = false) {
+#if DEBUG
+        guard !highFrequency || Self.isHighFrequencyLoggingEnabled else { return }
+#else
+        guard !highFrequency else { return }
+#endif
         print("MQTT TRACE \(message)")
     }
 
@@ -383,7 +395,7 @@ extension RealtimeService: CocoaMQTTDelegate {
     }
 
     func mqtt(_ mqtt: CocoaMQTT, didReceiveMessage message: CocoaMQTTMessage, id: UInt16) {
-        log("receive raw topic=\(message.topic) packet_id=\(id) qos=\(message.qos.rawValue) bytes=\(message.payload.count)")
+        log("receive raw topic=\(message.topic) packet_id=\(id) qos=\(message.qos.rawValue) bytes=\(message.payload.count)", highFrequency: true)
         guard let stringPayload = message.string else {
             log("receive dropped: payload is not utf8 topic=\(message.topic) bytes=\(message.payload.count)")
             return
@@ -433,10 +445,10 @@ extension RealtimeService: CocoaMQTTDelegate {
         log("unsubscribe ack topics=\(topics)")
     }
     func mqttDidPing(_ mqtt: CocoaMQTT) {
-        log("ping sent")
+        log("ping sent", highFrequency: true)
     }
     func mqttDidReceivePong(_ mqtt: CocoaMQTT) {
-        log("pong received")
+        log("pong received", highFrequency: true)
     }
     func mqttDidDisconnect(_ mqtt: CocoaMQTT, withError err: Error?) {
         if let err {
@@ -450,10 +462,10 @@ extension RealtimeService: CocoaMQTTDelegate {
         scheduleRetry(reason: "socket_disconnected")
     }
     func mqtt(_ mqtt: CocoaMQTT, didPublishMessage message: CocoaMQTTMessage, id: UInt16) {
-        log("publish sent packet_id=\(id) topic=\(message.topic) qos=\(message.qos.rawValue) bytes=\(message.payload.count)")
+        log("publish sent packet_id=\(id) topic=\(message.topic) qos=\(message.qos.rawValue) bytes=\(message.payload.count)", highFrequency: true)
     }
     func mqtt(_ mqtt: CocoaMQTT, didPublishAck id: UInt16) {
-        log("publish ack packet_id=\(id)")
+        log("publish ack packet_id=\(id)", highFrequency: true)
     }
 }
 

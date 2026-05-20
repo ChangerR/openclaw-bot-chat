@@ -6,10 +6,26 @@ class BotsViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
 
+    private let refreshInterval: TimeInterval = 45
     private var cancellables = Set<AnyCancellable>()
+    private var hasLoaded = false
+    private var lastRefreshAt: Date?
 
-    func fetchBots() {
+    func refreshIfNeeded(force: Bool = false) {
+        if isLoading {
+            return
+        }
+
+        if !force, hasLoaded, let lastRefreshAt, Date().timeIntervalSince(lastRefreshAt) < refreshInterval {
+            return
+        }
+
+        fetchBots()
+    }
+
+    private func fetchBots() {
         isLoading = true
+        errorMessage = nil
         APIClient.shared.request("/api/v1/bots")
             .receive(on: DispatchQueue.main)
             .sink { completion in
@@ -19,6 +35,8 @@ class BotsViewModel: ObservableObject {
                 }
             } receiveValue: { (bots: [Bot]) in
                 self.bots = bots
+                self.hasLoaded = true
+                self.lastRefreshAt = Date()
             }
             .store(in: &cancellables)
     }
@@ -38,7 +56,7 @@ class BotsViewModel: ObservableObject {
                     self.errorMessage = error.localizedDescription
                 }
             } receiveValue: { (_: Bot) in
-                self.fetchBots()
+                self.refreshIfNeeded(force: true)
                 onDone()
             }
             .store(in: &cancellables)
@@ -87,7 +105,7 @@ struct BotsView: View {
                             .padding(.top, 8)
                             .padding(.bottom, 10)
 
-                        if viewModel.isLoading {
+                        if viewModel.isLoading && viewModel.bots.isEmpty {
                             ProgressView()
                                 .padding(.top, 32)
                         }
@@ -134,9 +152,9 @@ struct BotsView: View {
             }
             .onAppear {
                 authManager.refreshCurrentUserIfNeeded()
-                viewModel.fetchBots()
+                viewModel.refreshIfNeeded()
             }
-            .refreshable { viewModel.fetchBots() }
+            .refreshable { viewModel.refreshIfNeeded(force: true) }
             .sheet(isPresented: $showingCreate) {
                 createBotSheet
             }

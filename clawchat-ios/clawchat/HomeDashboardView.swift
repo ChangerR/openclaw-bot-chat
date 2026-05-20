@@ -28,7 +28,10 @@ final class HomeDashboardViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
 
+    private let refreshInterval: TimeInterval = 45
     private var cancellables = Set<AnyCancellable>()
+    private var hasLoaded = false
+    private var lastRefreshAt: Date?
 
     var metrics: HomeDashboardMetrics {
         HomeDashboardMetrics(bots: bots, groups: groups, conversations: conversations)
@@ -45,7 +48,15 @@ final class HomeDashboardViewModel: ObservableObject {
         }
     }
 
-    func refresh() {
+    func refreshIfNeeded(force: Bool = false) {
+        if isLoading {
+            return
+        }
+
+        if !force, hasLoaded, let lastRefreshAt, Date().timeIntervalSince(lastRefreshAt) < refreshInterval {
+            return
+        }
+
         errorMessage = nil
         isLoading = true
 
@@ -65,6 +76,8 @@ final class HomeDashboardViewModel: ObservableObject {
                 self?.bots = bots
                 self?.groups = groups
                 self?.conversations = conversations
+                self?.hasLoaded = true
+                self?.lastRefreshAt = Date()
             }
             .store(in: &cancellables)
     }
@@ -93,10 +106,10 @@ struct HomeDashboardView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .onAppear {
-                viewModel.refresh()
+                viewModel.refreshIfNeeded()
             }
             .refreshable {
-                viewModel.refresh()
+                viewModel.refreshIfNeeded(force: true)
             }
         }
     }
@@ -140,7 +153,7 @@ struct HomeDashboardView: View {
                 }
             }
 
-            if let errorMessage = viewModel.errorMessage {
+            if let errorMessage = viewModel.errorMessage, viewModel.recentConversations.isEmpty {
                 HomeEmptyState(
                     systemImage: "exclamationmark.triangle.fill",
                     title: "Dashboard unavailable",
