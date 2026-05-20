@@ -152,6 +152,9 @@ struct SettingsView: View {
                             sectionHeader(title: "System")
                             systemCard
 
+                            sectionHeader(title: "About")
+                            aboutCard
+
                             logoutButton
                         } else if viewModel.isLoading {
                             loadingIndicator
@@ -223,23 +226,11 @@ struct SettingsView: View {
     }
 
     private var settingsHeader: some View {
-        ZStack {
-            HStack {
-                Image("AppLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 36, height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-
-                Spacer()
-            }
-
-            Text("Settings")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.rcmsTextStrong)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 4)
+        Text("Settings")
+            .font(.system(size: 28, weight: .bold, design: .rounded))
+            .foregroundStyle(Color.rcmsTextStrong)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
     }
 
     private func profileHeader(user: User) -> some View {
@@ -472,7 +463,7 @@ struct SettingsView: View {
                 .tint(Color.rcmsAccent)
             }
             divider
-            preferenceRow(title: "Compact message mode", subtitle: compactMessageMode ? "Dense bubbles and tighter spacing" : "Comfortable message spacing", icon: "text.alignleft") {
+            preferenceRow(title: "Compact message mode", subtitle: compactMessageMode ? "Compact" : "Comfort", icon: "text.alignleft") {
                 Toggle("", isOn: $compactMessageMode)
                     .labelsHidden()
                     .tint(Color.rcmsAccent)
@@ -497,6 +488,37 @@ struct SettingsView: View {
             divider
             infoRow(title: "API endpoint", value: APIClient.shared.baseURL.absoluteString, icon: "network", isMonospaced: true, copyString: APIClient.shared.baseURL.absoluteString)
         }
+        .glassCardStyle()
+    }
+
+    private var aboutCard: some View {
+        HStack(spacing: 14) {
+            Image("AppLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 42, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                )
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("ClawChat")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Color.rcmsTextPrimary)
+                    .lineLimit(1)
+
+                Text(appVersionText)
+                    .font(.caption)
+                    .foregroundStyle(Color.rcmsTextSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Spacer(minLength: 12)
+        }
+        .padding(16)
         .glassCardStyle()
     }
 
@@ -529,6 +551,7 @@ struct SettingsView: View {
             Text(title)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(Color.rcmsTextPrimary)
+                .lineLimit(1)
             Spacer()
             HStack(spacing: 6) {
                 Text(value)
@@ -536,6 +559,7 @@ struct SettingsView: View {
                     .fontDesign(isMonospaced ? .monospaced : .default)
                     .foregroundStyle(Color.rcmsTextPrimary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                 
                 if let copyString {
                     Button {
@@ -588,9 +612,12 @@ struct SettingsView: View {
                 Text(title)
                     .font(.body.weight(.medium))
                     .foregroundStyle(Color.rcmsTextPrimary)
+                    .lineLimit(1)
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(Color.rcmsTextSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             Spacer()
             content()
@@ -772,20 +799,36 @@ struct SettingsView: View {
 
     private var notificationSubtitle: String {
         switch notificationAuthorizationStatus {
-        case .authorized, .provisional: return botNotificationsEnabled ? "Enabled" : "Permission granted"
-        case .denied: return "Disabled in system settings"
-        default: return "Not configured"
+        case .authorized, .provisional: return botNotificationsEnabled ? "On" : "Allowed"
+        case .denied: return "Blocked"
+        default: return "Off"
         }
     }
 
     private var imageUploadQualitySubtitle: String {
         switch imageUploadQuality {
         case "Original":
-            return "Prefer original files when possible"
+            return "Original"
         case "Compressed":
-            return "Smaller uploads for slower networks"
+            return "Small"
         default:
-            return "Balanced size and clarity"
+            return "Balanced"
+        }
+    }
+
+    private var appVersionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+
+        switch (version?.isEmpty == false ? version : nil, build?.isEmpty == false ? build : nil) {
+        case let (.some(version), .some(build)):
+            return "Version \(version) (\(build))"
+        case let (.some(version), .none):
+            return "Version \(version)"
+        case let (.none, .some(build)):
+            return "Build \(build)"
+        default:
+            return "OpenClaw Bot Chat"
         }
     }
 
